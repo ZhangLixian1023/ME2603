@@ -32,8 +32,6 @@ jobs:
           script: |
               cd /var/www/ME2603
               git pull
-              corepack enable
-              corepack prepare pnpm@11.19.0 --activate
               pnpm install --frozen-lockfile
               pnpm build
               # 下面是本网站的启动命令
