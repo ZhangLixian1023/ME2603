@@ -33,4 +33,4 @@ jobs:
               cd /var/www/ME2603
               git pull
               # 下面是本网站的启动命令
-              python3 -m http.server 80 
+              python3 -m http.server 8000 
