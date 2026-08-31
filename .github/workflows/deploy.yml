@@ -35,6 +35,8 @@ jobs:
               corepack enable
               corepack prepare pnpm@11.19.0 --activate
               pnpm install --frozen-lockfile
+              pnpm build
               # 下面是本网站的启动命令
               pm2 delete me2603 2>/dev/null || true
-              pm2 start "pnpm preview" --name me2603
+              set -a && . ./.env && set +a
+              pm2 start "pnpm start" --name me2603
