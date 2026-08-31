@@ -32,4 +32,6 @@ jobs:
           script: |
               cd /var/www/ME2603
               git pull
-              pkill -f "python3 -m http.server" || nohup python3 -m http.server 80
+              # 下面是本网站的启动命令
+              pm2 delete me2603 2>/dev/null || true
+              pm2 serve /var/www/ME2603 80 --name me2603
