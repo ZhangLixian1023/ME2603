@@ -14,10 +14,13 @@ export async function POST(request: NextRequest) {
   }
 
   const response = NextResponse.json({ ok: true });
+  const secureCookie =
+    process.env.COOKIE_SECURE === "true" ||
+    (process.env.COOKIE_SECURE === undefined && process.env.NODE_ENV === "production");
   response.cookies.set(sessionCookieName, createSessionToken(), {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: secureCookie,
     maxAge: 60 * 60 * 24 * 7,
     path: "/",
   });
