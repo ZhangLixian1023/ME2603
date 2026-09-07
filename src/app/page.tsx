@@ -1,69 +1,67 @@
-import Image from "next/image";
+"use client";
+
+import Link from "next/link";
+import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
+import Brand from "@/components/Brand";
+import LanguageToggle from "@/components/LanguageToggle";
+import { useLanguage } from "@/components/LanguageProvider";
 
 export default function Home() {
+  const [code, setCode] = useState("");
+  const router = useRouter();
+  const { t } = useLanguage();
+
+  function join(event: FormEvent) {
+    event.preventDefault();
+    const normalized = code.trim().toUpperCase();
+    if (normalized) router.push(`/quiz/${encodeURIComponent(normalized)}`);
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="landing-shell">
+      <nav className="topbar">
+        <Brand />
+        <div className="topbar-actions">
+          <LanguageToggle />
+          <Link className="nav-link" href="/teacher">{t("teacherEntry")} <span>→</span></Link>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      </nav>
+
+      <section className="hero">
+        <div className="hero-copy">
+          <span className="eyebrow"><i /> {t("heroEyebrow")}</span>
+          <h1>{t("heroTitleStart")}<br /><em>{t("heroTitleEmphasis")}</em></h1>
+          <p>{t("heroDescription")}</p>
+
+          <form className="join-box" onSubmit={join}>
+            <label htmlFor="quiz-code">{t("classCode")}</label>
+            <div className="join-row">
+              <input id="quiz-code" value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} placeholder={t("codePlaceholder")} maxLength={12} autoComplete="off" />
+              <button type="submit">{t("joinQuiz")} <span>↗</span></button>
+            </div>
+            <span className="join-hint">{t("demoCode")}</span>
+          </form>
         </div>
-      </main>
-    </div>
+
+        <div className="hero-visual" aria-hidden="true">
+          <div className="orbit orbit-one" /><div className="orbit orbit-two" />
+          <div className="score-card">
+            <div className="score-top"><span>{t("weeklyQuiz")}</span><b>LIVE</b></div>
+            <div className="score-ring"><strong>8</strong><small>/ 10</small></div>
+            <div className="score-note">{t("niceWork")}</div>
+          </div>
+          <div className="float-card float-a"><b>✓</b><span>{t("autoGrading")}<br /><small>{t("instantResults")}</small></span></div>
+          <div className="float-card float-b"><b>#1</b><span>{t("classLeaderboard")}<br /><small>{t("nicknameOnly")}</small></span></div>
+        </div>
+      </section>
+
+      <section className="feature-strip">
+        <article><span>01</span><div><h3>{t("noStudentAccount")}</h3><p>{t("idNicknameToJoin")}</p></div></article>
+        <article><span>02</span><div><h3>{t("gradedAfterSubmit")}</h3><p>{t("noAnswersRevealed")}</p></div></article>
+        <article><span>03</span><div><h3>{t("liveLeaderboard")}</h3><p>{t("rankedByScore")}</p></div></article>
+      </section>
+      <footer className="site-footer"><span>{t("brand")} · Classroom Quiz</span><Link href="/privacy">{t("privacy")}</Link></footer>
+    </main>
   );
 }
