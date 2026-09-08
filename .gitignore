@@ -42,6 +42,9 @@ yarn-error.log*
 /output/
 /tmp/
 
+# local Claude skills (may contain secrets like teacher passwords)
+/.claude/skills/
+
 # vercel
 .vercel
 
