@@ -1,0 +1,54 @@
+# HTTP: redirect to HTTPS, but allow ACME challenges through
+server {
+    listen 80;
+    listen [::]:80;
+    server_name trainnn.work;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# HTTPS: main app + GitHub webhook on 443
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name trainnn.work;
+
+    ssl_certificate     /etc/letsencrypt/live/trainnn.work/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/trainnn.work/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    client_max_body_size 1m;
+
+    # GitHub webhook → local node service. server.mjs only trusts X-Real-IP
+    # when the TCP peer is 127.0.0.1, so external spoofing is harmless.
+    location = /webhook {
+        proxy_pass http://127.0.0.1:3101;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+        proxy_read_timeout 60s;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+        proxy_read_timeout 60s;
+    }
+}

@@ -44,5 +44,16 @@ set -a
 set +a
 pm2 start "pnpm start" --name me2603 --cwd /var/www/ME2603
 
+# Sync webhook receiver (lives outside the repo at /opt/me2603-webhook/).
+# Only restart it if the file actually changed, to avoid bouncing
+# in-flight GitHub deliveries.
+if ! cmp -s deploy/server.mjs /opt/me2603-webhook/server.mjs; then
+  echo "[deploy] webhook receiver changed, restarting"
+  sudo install -m 0755 deploy/server.mjs /opt/me2603-webhook/server.mjs
+  pm2 restart me2603-webhook
+else
+  echo "[deploy] webhook receiver unchanged"
+fi
+
 echo "[deploy] done"
-pm2 status me2603
+pm2 status me2603 me2603-webhook

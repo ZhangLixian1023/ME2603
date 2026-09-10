@@ -1,14 +1,47 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { readFileSync, statSync, appendFileSync, openSync } from "node:fs";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 const PORT = 3101;
 const CIDR_FILE = "/etc/me2603-webhook/gh-actions-cidrs.json";
 const AUDIT_LOG = "/var/log/me2603-webhook/audit.log";
 const DEPLOY_SCRIPT = "/var/www/ME2603/scripts/deploy.sh";
+const ENV_FILE = "/var/www/ME2603/.env";
 const ALLOWED_REF = "refs/heads/main";
 const MAX_BODY = 1024 * 1024;
 const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// --- Webhook secret --------------------------------------------------------
+
+// pm2 launches server.mjs without loading /var/www/ME2603/.env, so pick up
+// WEBHOOK_SECRET from there if it's not already in the process environment.
+function loadSecretFromEnvFile() {
+  try {
+    const lines = readFileSync(ENV_FILE, "utf8").split("\n");
+    for (const line of lines) {
+      const m = line.match(/^\s*WEBHOOK_SECRET\s*=\s*(.+?)\s*$/);
+      if (m) return m[1];
+    }
+  } catch {}
+  return "";
+}
+
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || loadSecretFromEnvFile();
+if (WEBHOOK_SECRET) {
+  console.log(`[start] WEBHOOK_SECRET loaded (${WEBHOOK_SECRET.length} chars)`);
+} else {
+  console.error("[start] WEBHOOK_SECRET not configured, refusing all webhook requests");
+}
+
+function verifySignature(rawBody, header) {
+  if (!WEBHOOK_SECRET || !header) return false;
+  const expected = "sha256=" + createHmac("sha256", WEBHOOK_SECRET).update(rawBody).digest("hex");
+  const a = Buffer.from(header);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 // --- IP allowlist ----------------------------------------------------------
 
@@ -115,6 +148,17 @@ function ipAllowed(ip) {
   return false;
 }
 
+// Behind nginx, the TCP peer is 127.0.0.1 and X-Real-IP carries the real
+// client. Trust the header only in that case so external callers can't
+// forge it to bypass the GitHub CIDR allowlist.
+function clientIp(req) {
+  const socketIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+  if (socketIp === "127.0.0.1" && req.headers["x-real-ip"]) {
+    return req.headers["x-real-ip"];
+  }
+  return socketIp;
+}
+
 // --- Dedup ------------------------------------------------------------------
 
 const recentDeliveries = new Map(); // deliveryId -> expiresAt
@@ -152,7 +196,7 @@ function triggerDeploy(deliveryId, commit, pusher) {
 // --- HTTP server ------------------------------------------------------------
 
 const server = createServer((req, res) => {
-  const remoteIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+  const remoteIp = clientIp(req);
 
   if (req.method !== "POST" || req.url !== "/webhook") {
     res.writeHead(404, { "content-type": "text/plain" }).end("not found");
@@ -185,6 +229,14 @@ const server = createServer((req, res) => {
       return;
     }
 
+    const rawBody = Buffer.concat(chunks);
+
+    if (!verifySignature(rawBody, req.headers["x-hub-signature-256"])) {
+      audit("reject_sig", { remote_ip: remoteIp, has_sig: Boolean(req.headers["x-hub-signature-256"]) });
+      res.writeHead(401, { "content-type": "application/json" }).end('{"error":"bad signature"}');
+      return;
+    }
+
     const event = req.headers["x-github-event"];
     const deliveryId = req.headers["x-github-delivery"] || "";
 
@@ -202,7 +254,7 @@ const server = createServer((req, res) => {
 
     let payload;
     try {
-      payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      payload = JSON.parse(rawBody.toString("utf8"));
     } catch (e) {
       audit("reject_bad_json", { remote_ip: remoteIp, error: e.message });
       res.writeHead(400).end('{"error":"bad json"}');

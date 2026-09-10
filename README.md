@@ -6,20 +6,22 @@
 
 ## 实际部署情况
 
-生产环境是一台阿里云 ECS（HKaliyun），所有组件都直接装在系统里，没有 Docker，也没有 Nginx 反代：
+生产环境是一台阿里云 ECS（HKaliyun），所有组件都直接装在系统里，没有 Docker。Nginx 在 80/443 上做 HTTPS 反代：
 
 ```text
-浏览器  ──HTTP──▶  :3100  (Next.js / pnpm start, 由 pm2 守护)
-                       │
-                       ├─▶  :5432  (PostgreSQL，仅本机监听)
-                       └─▶  :3101  (webhook 接收服务，由 pm2 守护)
-                                      ▲
-GitHub push ──POST──HTTP──▶  :3101/webhook  (带 IP 白名单)
+浏览器  ──HTTPS──▶  :443  (nginx)
+                       ├─▶  :3100  (Next.js / pnpm start, 由 pm2 守护, 仅 127.0.0.1)
+                       │       │
+                       │       └─▶  :5432  (PostgreSQL, 仅 127.0.0.1)
+                       └─▶  :3101  (webhook 接收服务, 仅 127.0.0.1)
+HTTP   ──▶  :80  ──301──▶ https://trainnn.work
+GitHub push ──POST──HTTPS──▶  :443/webhook  (IP 白名单)
 ```
 
-- **Next.js 应用**：监听 `0.0.0.0:3100`，通过 `pm2` 拉起并随开机自启
+- **Nginx**：监听 `0.0.0.0:80`（强制跳转 HTTPS）和 `0.0.0.0:443`（TLS 终结 + 反代）。配置：`/etc/nginx/sites-available/trainnn.work`，源码在仓库 `deploy/trainnn.work.nginx`。
+- **Next.js 应用**：监听 `0.0.0.0:3100`（仅本机，ufw 已关闭公网入口），通过 `pm2` 拉起并随开机自启
 - **PostgreSQL**：监听 `127.0.0.1:5432`，由 `quiz` 用户管理 `quiz` 数据库
-- **Webhook 接收服务**：`/opt/me2603-webhook/server.mjs`，监听 `:3101`，只接受来自 GitHub `hooks` IP 段的 POST
+- **Webhook 接收服务**：`/opt/me2603-webhook/server.mjs`，监听 `:3101`（仅本机，ufw 已关闭公网入口），只接受来自 GitHub `hooks` IP 段的 POST
 - **SSH 入口**：`/var/www/ME2603/` 是部署目录，`.env` 在该目录下
 - **每日定时任务**：`systemd` timer 每天凌晨刷新 GitHub IP 白名单
 
@@ -111,7 +113,7 @@ DATABASE_URL=postgresql://quiz:你的密码@127.0.0.1:5432/quiz
 DATABASE_POOL_MAX=20
 PORT=3100
 HOSTNAME=0.0.0.0
-COOKIE_SECURE=false   # 走 HTTP，必须 false，否则浏览器拒收 cookie
+COOKIE_SECURE=true   # 走 HTTPS，必须 true，否则浏览器拒收 cookie
 ```
 
 ### 3. 启动 Next.js 应用
@@ -158,27 +160,59 @@ pm2 save
 
 | 字段 | 值 |
 | --- | --- |
-| Payload URL | `http://你的服务器IP:3101/webhook` |
+| Payload URL | `https://trainnn.work/webhook` |
 | Content type | `application/json` |
-| Secret | *留空* |
-| SSL verification | ☐ Disable（走 HTTP） |
+| Secret | 见下文「Webhook secret」一节 |
+| SSL verification | ☑ Enable |
 | Which events | ☑ Just the push event |
 
 保存后 GitHub 会立刻发 `ping`，在 webhook 详情的 Recent deliveries 看到 `200` 即通。
 
-### 5. 防火墙 (ufw)
+### Webhook secret
+
+服务端用 HMAC-SHA256 校验 `X-Hub-Signature-256`。两边必须用同一个 secret：
 
 ```bash
-sudo ufw allow 3100/tcp comment "me2603 web"
-sudo ufw allow 3101/tcp comment "github-webhook"
-sudo ufw allow 22/tcp    comment "ssh"
+# 生成
+SECRET=$(openssl rand -hex 32)
+echo "$SECRET"
 
-# 想收紧 SSH 仅自己访问：
-# sudo ufw delete allow 22/tcp
-# sudo ufw allow from 你家IP to any port 22 proto tcp comment "ssh-from-home"
+# 写入 .env
+echo "WEBHOOK_SECRET=$SECRET" >> /var/www/ME2603/.env
+pm2 restart me2603-webhook
 ```
 
-**不要把 5432 暴露到公网**——PostgreSQL 只对 127.0.0.1 监听。
+GitHub 端：仓库 → Settings → Webhooks → 编辑 webhook，把同样的 secret 粘进 Secret 输入框，保存。`server.mjs` 启动日志会打印 `WEBHOOK_SECRET loaded (64 chars)`，未配置时会拒绝所有请求并提示 `WEBHOOK_SECRET not configured`。
+
+### 5. HTTPS（Nginx + Let's Encrypt）
+
+```bash
+# 安装 nginx
+sudo apt install -y nginx
+
+# 申请证书（首次）
+sudo apt install -y certbot
+sudo certbot --nginx -d trainnn.work
+
+# 把仓库里的配置拷过去
+sudo cp deploy/trainnn.work.nginx /etc/nginx/sites-available/trainnn.work
+sudo ln -sf /etc/nginx/sites-available/trainnn.work /etc/nginx/sites-enabled/trainnn.work
+sudo nginx -t && sudo systemctl reload nginx
+
+# 证书自动续期：certbot 装的 systemd timer 已经搞定，不用额外配
+```
+
+`server.mjs` 只信任 `X-Real-IP`，且仅在 TCP 对端为 `127.0.0.1` 时信任，外部伪造 header 无效。
+
+### 6. 防火墙 (ufw)
+
+```bash
+sudo ufw allow 22/tcp    comment "ssh"
+sudo ufw allow 80/tcp    comment "http -> https"
+sudo ufw allow 443/tcp   comment "https"
+```
+
+`3100`（Next.js）和 `3101`（webhook）只对 `127.0.0.1` 监听，不在 ufw 里开放。**不要把 5432 暴露到公网**——PostgreSQL 只对 127.0.0.1 监听。
 
 ### 6. 部署脚本做了什么
 
@@ -347,12 +381,12 @@ ME2603/
 ## 上线前检查
 
 1. 更换数据库密码、教师密码。
-2. ufw 已经把 5432 留作 127.0.0.1，公网只开 3100、3101、22。
-3. `.env` 中的 `COOKIE_SECURE` 与实际协议一致（HTTP 必须 `false`，否则浏览器拒收 cookie）。
-4. GitHub webhook 配置已加入，Recent deliveries 中 `ping` 返回 200。
-5. 推一次真实改动，确认 webhook → 部署 → 应用健康（`curl http://IP:3100/api/health` 返回 `{"status":"ok"}`）。
+2. ufw 已经把 5432 留作 127.0.0.1，公网只开 22/80/443。
+3. `.env` 中的 `COOKIE_SECURE=true` 与 HTTPS 一致。
+4. GitHub webhook Payload URL 改为 `https://trainnn.work/webhook`，Recent deliveries 中 `ping` 返回 200。
+5. 推一次真实改动，确认 webhook → 部署 → 应用健康（`curl https://trainnn.work/api/health` 返回 `{"status":"ok"}`）。
 6. `pm2 save` 已经执行，重启服务器后两个进程都会自启。
-7. 考虑加 HTTPS（目前为 HTTP）：申请域名 + Let's Encrypt + nginx 反代 + `COOKIE_SECURE=true`。
+7. Let's Encrypt 证书由 `certbot.timer` 自动续期。
 
 ## 隐私提醒
 
