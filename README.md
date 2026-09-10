@@ -19,9 +19,9 @@ GitHub push ──POST──HTTPS──▶  :443/webhook  (IP 白名单)
 ```
 
 - **Nginx**：监听 `0.0.0.0:80`（强制跳转 HTTPS）和 `0.0.0.0:443`（TLS 终结 + 反代）。配置：`/etc/nginx/sites-available/trainnn.work`，源码在仓库 `deploy/trainnn.work.nginx`。
-- **Next.js 应用**：监听 `0.0.0.0:3100`（仅本机，ufw 已关闭公网入口），通过 `pm2` 拉起并随开机自启
+- **Next.js 应用**：进程绑 `0.0.0.0:3100`，但仅本机可达（ufw 已关闭公网入口），通过 `pm2` 拉起并随开机自启
 - **PostgreSQL**：监听 `127.0.0.1:5432`，由 `quiz` 用户管理 `quiz` 数据库
-- **Webhook 接收服务**：`/opt/me2603-webhook/server.mjs`，监听 `:3101`（仅本机，ufw 已关闭公网入口），只接受来自 GitHub `hooks` IP 段的 POST
+- **Webhook 接收服务**：`/opt/me2603-webhook/server.mjs`，监听 `:3101`（仅本机，ufw 已关闭公网入口）。校验两道：GitHub `hooks` 段 IP + `X-Hub-Signature-256` HMAC（密钥在 `.env` 的 `WEBHOOK_SECRET`）
 - **SSH 入口**：`/var/www/ME2603/` 是部署目录，`.env` 在该目录下
 - **每日定时任务**：`systemd` timer 每天凌晨刷新 GitHub IP 白名单
 
@@ -29,11 +29,12 @@ GitHub push ──POST──HTTPS──▶  :443/webhook  (IP 白名单)
 
 ```text
 开发者 git push origin main
-  → GitHub POST 到 HKaliyun:3101/webhook
-  → 服务端校验 IP 白名单 + ref 是 refs/heads/main + 没在 24h 内重投递
+  → GitHub POST 到 https://trainnn.work/webhook（经 nginx :443）
+  → 服务端校验 IP 白名单 + X-Hub-Signature-256 (HMAC-SHA256) + ref 是 refs/heads/main + 没在 24h 内重投递
   → 执行 /var/www/ME2603/scripts/deploy.sh
   → flock 互斥 → git fetch → 比对 HEAD 与 origin/main
   → 若有新文件改动：git pull → pnpm install → pnpm build → pm2 重启
+  → 若 deploy/server.mjs 也变了：同步覆盖 /opt/me2603-webhook/server.mjs 并 pm2 restart me2603-webhook
   → 若只是空 commit / 无文件变化：跳过重启
 ```
 
@@ -130,7 +131,7 @@ pm2 save   # 把当前进程列表写入开机自启
 
 ### 4. 配置 GitHub Webhook self-host
 
-服务器本身有一个 webhook 接收进程在 :3101 监听，只接受 GitHub 的 POST。
+服务器上有一个 webhook 接收进程在 `:3101` 监听，但公网入口走 nginx 反代（`https://trainnn.work/webhook`）。所有流量进 nginx 后转发到本机的 `:3101`。校验两道：GitHub `hooks` 段 IP + `X-Hub-Signature-256` HMAC-SHA256。
 
 **服务器端**（HKaliyun 上已经做好的步骤，正常运维不需要重做）：
 
@@ -152,7 +153,7 @@ pm2 start /opt/me2603-webhook/server.mjs --name me2603-webhook
 pm2 save
 ```
 
-源码都在仓库的 `deploy/` 目录，每次更新代码时 `git pull` 会自动拉取最新版本（部署脚本会同步重启 `me2603-webhook` 进程）。
+源码都在仓库的 `deploy/` 目录。`deploy.sh` 会在每次部署时对比 `deploy/server.mjs` 和 `/opt/me2603-webhook/server.mjs`，**只有不同**才覆盖并 `pm2 restart me2603-webhook`，避免抖动正在 in-flight 的 GitHub 投递。
 
 **GitHub 端**：
 
@@ -214,7 +215,7 @@ sudo ufw allow 443/tcp   comment "https"
 
 `3100`（Next.js）和 `3101`（webhook）只对 `127.0.0.1` 监听，不在 ufw 里开放。**不要把 5432 暴露到公网**——PostgreSQL 只对 127.0.0.1 监听。
 
-### 6. 部署脚本做了什么
+### 7. 部署脚本做了什么
 
 `/var/www/ME2603/scripts/deploy.sh` 由 webhook 服务调用，逻辑：
 
