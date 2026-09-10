@@ -1,13 +1,13 @@
 ---
 name: me2603-quiz-admin
-description: Operate the ME2063 course quiz backend at http://47.238.4.125:3100 on behalf of the teacher. Use when the user wants to create / edit / publish / unpublish quizzes, view or export student submissions, allow students to resubmit, or analyze class performance. Backend is Next.js 16 + PostgreSQL on plain HTTP; auth is a session cookie obtained from /api/teacher/login.
+description: Operate the ME2603 course quiz backend at https://trainnn.work on behalf of the teacher. Use when the user wants to create / edit / publish / unpublish quizzes, view or export student submissions, allow students to resubmit, or analyze class performance. Backend is Next.js + PostgreSQL behind nginx HTTPS; auth is a session cookie obtained from /api/teacher/login.
 ---
 
 # ME2603 Quiz Backend
 
 ## Connection
 
-- **Base URL**: `http://47.238.4.125:3100`
+- **Base URL**: `https://trainnn.work` (HTTPS via nginx; the Next.js app on `:3100` and webhook on `:3101` are only reachable on `127.0.0.1`)
 - **Teacher password**: not stored in this skill. Obtain it from one of:
   1. **Ask the user directly** — preferred when the operator may not have SSH access. Use AskUserQuestion or a plain prompt and use the value verbatim.
   2. **Read from the server** — only if the operator already has SSH access to the `HKaliyun` alias:
@@ -15,8 +15,8 @@ description: Operate the ME2063 course quiz backend at http://47.238.4.125:3100 
      ssh HKaliyun 'grep ^TEACHER_PASSWORD= /var/www/ME2603/.env | cut -d= -f2'
      ```
 - Do not commit the password to any tracked file.
-- **Auth cookie name**: `quiz_teacher_session`
-- **Server**: plain HTTP, no TLS, cookie is `Secure: false` by config
+- **Auth cookie name**: `quiz_teacher_session` (HttpOnly, `Secure: true` — sent only over HTTPS)
+- **Server**: nginx terminates TLS on :443 and reverse-proxies to the Next.js app on `127.0.0.1:3100`
 
 ## Authentication
 
@@ -35,10 +35,10 @@ CJ=/tmp/me2603_cookies.txt
 rm -f "$CJ"
 curl -s -c "$CJ" -X POST -H 'Content-Type: application/json' \
   -d "{\"password\":\"$TEACHER_PASSWORD\"}" \
-  http://47.238.4.125:3100/api/teacher/login
+  https://trainnn.work/api/teacher/login
 ```
 
-Verify with `curl -s -b "$CJ" http://47.238.4.125:3100/api/teacher/session` — returns `{"authenticated":true}` when good.
+Verify with `curl -s -b "$CJ" https://trainnn.work/api/teacher/session` — returns `{"authenticated":true}` when good.
 
 ## Endpoints
 
@@ -123,7 +123,7 @@ TEACHER_PASSWORD="<password — ask the user or ssh HKaliyun to read it>"
 CJ=/tmp/me2603_cookies.txt
 curl -s -c "$CJ" -X POST -H 'Content-Type: application/json' \
   -d "{\"password\":\"$TEACHER_PASSWORD\"}" \
-  http://47.238.4.125:3100/api/teacher/login > /dev/null
+  https://trainnn.work/api/teacher/login > /dev/null
 
 cat > /tmp/quiz.json <<'JSON'
 {
@@ -138,7 +138,7 @@ JSON
 
 curl -s -b "$CJ" -X POST -H 'Content-Type: application/json' \
   --data @/tmp/quiz.json \
-  http://47.238.4.125:3100/api/teacher/quizzes
+  https://trainnn.work/api/teacher/quizzes
 # → {"quiz":{"id":3,"code":"GH7K2P"}}
 ```
 
@@ -147,7 +147,7 @@ Write complex JSON to a file (via heredoc) and post with `--data @file` — avoi
 ### List all quizzes (with submission counts)
 
 ```bash
-curl -s -b "$CJ" http://47.238.4.125:3100/api/teacher/quizzes
+curl -s -b "$CJ" https://trainnn.work/api/teacher/quizzes
 ```
 
 Returns `{"quizzes":[{id,code,title,isPublished,questionCount,submissionCount,createdAt}, ...]}` sorted by id DESC.
@@ -155,7 +155,7 @@ Returns `{"quizzes":[{id,code,title,isPublished,questionCount,submissionCount,cr
 ### Pull and analyze one quiz's results
 
 ```bash
-curl -s -b "$CJ" http://47.238.4.125:3100/api/teacher/quizzes/$QUIZ_ID/results \
+curl -s -b "$CJ" https://trainnn.work/api/teacher/quizzes/$QUIZ_ID/results \
   | python3 -m json.tool
 ```
 
@@ -166,14 +166,14 @@ For class-wide analytics: pull results for each quiz, aggregate locally. There i
 ```bash
 curl -s -b "$CJ" -X PATCH -H 'Content-Type: application/json' \
   -d '{"published":true}' \
-  http://47.238.4.125:3100/api/teacher/quizzes/$QUIZ_ID/publish
+  https://trainnn.work/api/teacher/quizzes/$QUIZ_ID/publish
 ```
 
 ### Allow a student to retake
 
 ```bash
 curl -s -b "$CJ" -X DELETE \
-  http://47.238.4.125:3100/api/teacher/submissions/$SUBMISSION_ID
+  https://trainnn.work/api/teacher/submissions/$SUBMISSION_ID
 ```
 
 `student_id` is case-insensitive uniqueness per quiz — deleting one submission lets that student submit again.
@@ -182,7 +182,7 @@ curl -s -b "$CJ" -X DELETE \
 
 ```bash
 curl -s -b "$CJ" -o results.csv \
-  http://47.238.4.125:3100/api/teacher/quizzes/$QUIZ_ID/export
+  https://trainnn.work/api/teacher/quizzes/$QUIZ_ID/export
 ```
 
 ## Operating tips
@@ -192,7 +192,7 @@ curl -s -b "$CJ" -o results.csv \
 3. **Edit protection:** Once a quiz has any submission, `PUT` returns `QUIZ_HAS_SUBMISSIONS`. To edit, either `DELETE` each submission first or delete-and-recreate the quiz (which resets the code).
 4. **Surfacing errors:** All error responses are `{"error":"<message>"}` with appropriate HTTP status. Show the `error` field to the teacher.
 5. **Class analysis:** Aggregate locally with pandas / jq / python — server only exposes per-quiz data, no cross-quiz rollups.
-6. **No TLS:** Don't suggest HTTPS-only behavior. The session cookie is intentionally `Secure: false`.
+6. **TLS via nginx:** All requests go through `https://trainnn.work`. The session cookie is `Secure: true`, so cookie jars (`-c/-b`) must be reused against the HTTPS URL — do not downgrade to plain HTTP.
 
 ## Out of scope (don't try via API)
 
