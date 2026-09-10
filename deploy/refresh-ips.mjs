@@ -11,8 +11,8 @@ const res = await fetch(META_URL, {
 if (!res.ok) throw new Error(`meta fetch failed: ${res.status}`);
 const data = await res.json();
 
-const cidrs = [...new Set([...(data.actions ?? []), ...(data.actions_macos ?? [])])];
-if (cidrs.length < 100) throw new Error(`too few CIDRs returned (${cidrs.length}), aborting`);
+const cidrs = [...new Set([...(data.hooks ?? []), ...(data.web ?? [])])];
+if (cidrs.length < 3) throw new Error(`too few CIDRs returned (${cidrs.length}), aborting`);
 
 writeFileSync(TMP_FILE, JSON.stringify(cidrs, null, 2));
 renameSync(TMP_FILE, OUT_FILE);

@@ -62,9 +62,55 @@ function ipv4InCidr(ip, cidr) {
   return (ipInt & mask) === (netInt & mask);
 }
 
+function ipv6ToBigInt(ip) {
+  const colon = ip.indexOf("/");
+  if (colon !== -1) ip = ip.slice(0, colon);
+  const doubleColon = ip.indexOf("::");
+  let parts;
+  if (doubleColon === -1) {
+    parts = ip.split(":");
+  } else {
+    const left = ip.slice(0, doubleColon).split(":").filter(Boolean);
+    const right = ip.slice(doubleColon + 2).split(":").filter(Boolean);
+    const missing = 8 - left.length - right.length;
+    parts = [...left, ...Array(missing).fill("0"), ...right];
+  }
+  if (parts.length !== 8) return null;
+  let n = 0n;
+  for (const p of parts) {
+    const v = parseInt(p || "0", 16);
+    if (!Number.isFinite(v) || v < 0 || v > 0xffff) return null;
+    n = (n << 16n) | BigInt(v);
+  }
+  return n;
+}
+
+function ipv6InCidr(ip, cidr) {
+  const slash = cidr.indexOf("/");
+  if (slash === -1) return false;
+  const networkStr = cidr.slice(0, slash);
+  const prefix = Number(cidr.slice(slash + 1));
+  if (prefix < 0 || prefix > 128) return false;
+  const ipInt = ipv6ToBigInt(ip);
+  const netInt = ipv6ToBigInt(networkStr);
+  if (ipInt === null || netInt === null) return false;
+  if (prefix === 0) return true;
+  const mask = ((1n << 128n) - 1n) ^ ((1n << BigInt(128 - prefix)) - 1n);
+  return (ipInt & mask) === (netInt & mask);
+}
+
 function ipAllowed(ip) {
+  const isV4 = ip.includes(".");
   for (const cidr of cidrs) {
-    if (ipv4InCidr(ip, cidr)) return true;
+    if (isV4) {
+      if (!cidr.includes(":")) {
+        if (ipv4InCidr(ip, cidr)) return true;
+      }
+    } else {
+      if (cidr.includes(":")) {
+        if (ipv6InCidr(ip, cidr)) return true;
+      }
+    }
   }
   return false;
 }
