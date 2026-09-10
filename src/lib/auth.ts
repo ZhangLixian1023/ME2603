@@ -14,8 +14,11 @@ function secret() {
 
 export function teacherPassword() {
   if (process.env.TEACHER_PASSWORD) return process.env.TEACHER_PASSWORD;
-  if (process.env.NODE_ENV === "production") throw new Error("TEACHER_PASSWORD must be set in production");
-  return "teacher123";
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("TEACHER_PASSWORD must be set in production");
+  }
+  console.warn("[auth] TEACHER_PASSWORD env not set; using dev-only placeholder. Set it in .env for any real use.");
+  return "dev-only-do-not-deploy";
 }
 
 export function createSessionToken() {

@@ -102,7 +102,7 @@ git clone https://github.com/ZhangLixian1023/ME2603.git /var/www/ME2603
 cd /var/www/ME2603
 
 cp .env.example .env
-nano .env   # 至少修改 TEACHER_PASSWORD / DATABASE_URL / COOKS_SECURE
+nano .env   # 至少修改 TEACHER_PASSWORD / DATABASE_URL / COOKIE_SECURE / WEBHOOK_SECRET
 ```
 
 `.env` 中关键的几项：
@@ -277,7 +277,7 @@ pnpm preview
 
 - 学生端：<http://localhost:3100>
 - 教师端：<http://localhost:3100/teacher>
-- 教师密码：`teacher123`（写在 `.env.example` 里）
+- 教师密码：`scripts/preview.mjs` 里的 dev-only 占位符（生产部署必须在 `.env` 里设 `TEACHER_PASSWORD`，**绝不要把真实密码提交到 git**）
 - 示例测验代码：`DEMO26`
 
 预览模式用进程内存存数据，`Ctrl + C` 后会丢失。**正式数据一定走 PostgreSQL**。
