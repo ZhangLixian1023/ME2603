@@ -265,15 +265,6 @@ pnpm dev   # next dev，热更新
 
 `.env` 中 `PGHOST` 应为 `127.0.0.1`，`PGPASSWORD` 与 `POSTGRES_PASSWORD` 一致。
 
-## Webhook 部署的安全考量
-
-- **IP 白名单是核心防线**。webhook 接收服务只接受 GitHub `hooks` IP 段（4 个 IPv4 + 2 个 IPv6 CIDR）的 POST。任何伪造请求都会在网络层被拒，连 HMAC 都不用配。
-- **没有 SSH 跨主机**。GitHub 仓库设置里没有存任何 SSH 私钥，攻击者拿到 GitHub 凭据也连不到服务器，只能触发一次部署（而且部署逻辑是写死的）。
-- **空 commit 不会重启服务**。`git diff --quiet HEAD@{1} HEAD` 确保只有文件内容变化才重建。
-- **并发锁**。`flock` 防止两个 webhook 同时到达时跑两次 build。
-
-完整设计见 `.claude/skills/me2603-quiz-admin/SKILL.md`。
-
 ## 从旧版 SQLite 切换
 
 本版本不会再读取 `data/quiz.db`。首次启动 PostgreSQL 时会自动创建数据表，并生成示例测验 `DEMO26`。
