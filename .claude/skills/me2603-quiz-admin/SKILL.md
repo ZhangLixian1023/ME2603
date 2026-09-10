@@ -8,7 +8,13 @@ description: Operate the ME2063 course quiz backend at http://47.238.4.125:3100 
 ## Connection
 
 - **Base URL**: `http://47.238.4.125:3100`
-- **Teacher password**: stored on the server in `/var/www/ME2603/.env` as `TEACHER_PASSWORD`. Retrieve with `ssh HKaliyun 'grep ^TEACHER_PASSWORD= /var/www/ME2603/.env | cut -d= -f2'`. Do not commit the password to any tracked file.
+- **Teacher password**: not stored in this skill. Obtain it from one of:
+  1. **Ask the user directly** — preferred when the operator may not have SSH access. Use AskUserQuestion or a plain prompt and use the value verbatim.
+  2. **Read from the server** — only if the operator already has SSH access to the `HKaliyun` alias:
+     ```bash
+     ssh HKaliyun 'grep ^TEACHER_PASSWORD= /var/www/ME2603/.env | cut -d= -f2'
+     ```
+- Do not commit the password to any tracked file.
 - **Auth cookie name**: `quiz_teacher_session`
 - **Server**: plain HTTP, no TLS, cookie is `Secure: false` by config
 
@@ -16,8 +22,15 @@ description: Operate the ME2063 course quiz backend at http://47.238.4.125:3100 
 
 Always start a session by logging in and saving the cookie to a jar. Subsequent teacher calls reuse the jar. Student-facing endpoints do not need auth.
 
+Pick the first option that matches your context, then run:
+
 ```bash
-TEACHER_PASSWORD=$(ssh HKaliyun 'grep ^TEACHER_PASSWORD= /var/www/ME2603/.env | cut -d= -f2')
+# Option 1: password was just provided by the user
+TEACHER_PASSWORD="<paste from user>"
+
+# Option 2: fetch from server (only if you have SSH access)
+# TEACHER_PASSWORD=$(ssh HKaliyun 'grep ^TEACHER_PASSWORD= /var/www/ME2603/.env | cut -d= -f2')
+
 CJ=/tmp/me2603_cookies.txt
 rm -f "$CJ"
 curl -s -c "$CJ" -X POST -H 'Content-Type: application/json' \
@@ -106,7 +119,7 @@ Submissions are sorted `score DESC, submittedAt ASC`. CSV export endpoint return
 ### Create a quiz and remember the code
 
 ```bash
-TEACHER_PASSWORD=$(ssh HKaliyun 'grep ^TEACHER_PASSWORD= /var/www/ME2603/.env | cut -d= -f2')
+TEACHER_PASSWORD="<password — ask the user or ssh HKaliyun to read it>"
 CJ=/tmp/me2603_cookies.txt
 curl -s -c "$CJ" -X POST -H 'Content-Type: application/json' \
   -d "{\"password\":\"$TEACHER_PASSWORD\"}" \
