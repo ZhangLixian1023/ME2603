@@ -2,10 +2,15 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import Brand from "./Brand";
+import BackHomeLink from "./BackHomeLink";
+import LanguageToggle from "./LanguageToggle";
+import { localizeApiError, useLanguage } from "./LanguageProvider";
 
 type Entry = { nickname: string; score: number; total: number; submittedAt: string };
 
 export default function LeaderboardClient({ code }: { code: string }) {
+  const { language, t } = useLanguage();
   const [title, setTitle] = useState("");
   const [entries, setEntries] = useState<Entry[]>([]);
   const [error, setError] = useState("");
@@ -16,16 +21,11 @@ export default function LeaderboardClient({ code }: { code: string }) {
     try {
       const response = await fetch(`/api/quizzes/${encodeURIComponent(code)}/leaderboard`, { cache: "no-store" });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "无法载入排行榜");
-      setTitle(data.title);
-      setEntries(data.entries);
-      setError("");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "无法载入排行榜");
-    } finally {
-      setRefreshing(false);
-    }
-  }, [code]);
+      if (!response.ok) throw new Error(localizeApiError(data.error, language, "loadLeaderboardFailed"));
+      setTitle(data.title); setEntries(data.entries); setError("");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : t("loadLeaderboardFailed")); }
+    finally { setRefreshing(false); }
+  }, [code, language, t]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => { void load(); }, 0);
@@ -35,17 +35,15 @@ export default function LeaderboardClient({ code }: { code: string }) {
 
   return (
     <main className="leaderboard-shell">
-      <header className="simple-header inverse"><Link className="brand" href="/"><span className="brand-mark">答</span><span>答答看</span></Link><Link href={`/quiz/${code}`}>返回测验</Link></header>
+      <header className="simple-header inverse"><Brand /><div className="header-actions"><BackHomeLink inverse /><LanguageToggle inverse /><Link href={`/quiz/${code}`}>{t("backToQuiz")}</Link></div></header>
       <section className="leaderboard-head">
-        <span className="eyebrow light"><i /> 实时更新</span>
-        <h1>班级排行榜</h1>
-        <p>{title || `课堂代码 ${code}`}</p>
-        <button className="refresh-button" onClick={load} disabled={refreshing}>{refreshing ? "刷新中…" : "↻ 刷新排名"}</button>
+        <span className="eyebrow light"><i /> {t("liveUpdates")}</span><h1>{t("classLeaderboard")}</h1><p>{title || `${t("classCode")} ${code}`}</p>
+        <button className="refresh-button" onClick={load} disabled={refreshing}>{refreshing ? t("refreshing") : `↻ ${t("refreshRanking")}`}</button>
       </section>
       <section className="ranking-card">
-        <div className="ranking-title"><span>排名</span><span>同学</span><span>正确题数</span></div>
+        <div className="ranking-title"><span>{t("rank")}</span><span>{t("student")}</span><span>{t("correctAnswers")}</span></div>
         {error && <div className="error-box">{error}</div>}
-        {!error && entries.length === 0 && <div className="empty-state"><b>榜单还是空的</b><p>第一份答卷提交后，排名会出现在这里。</p></div>}
+        {!error && entries.length === 0 && <div className="empty-state"><b>{t("emptyLeaderboard")}</b><p>{t("emptyLeaderboardDetail")}</p></div>}
         {entries.map((entry, index) => (
           <article className={`rank-row rank-${index + 1}`} key={`${entry.nickname}-${entry.submittedAt}`}>
             <span className="rank-number">{index < 3 ? ["🥇", "🥈", "🥉"][index] : index + 1}</span>
@@ -54,7 +52,7 @@ export default function LeaderboardClient({ code }: { code: string }) {
           </article>
         ))}
       </section>
-      <p className="privacy-note">排行榜仅显示昵称，学号不会公开 · 每 10 秒自动更新</p>
+      <p className="privacy-note">{t("leaderboardPrivacy")}</p>
     </main>
   );
 }

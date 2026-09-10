@@ -19,7 +19,7 @@ export async function POST(request: NextRequest, context: RouteContext<"/api/qui
     return NextResponse.json({ error: "学号应为 2–30 位字母、数字、- 或 _" }, { status: 400 });
   }
   if (nickname.length < 1 || nickname.length > 20) {
-    return NextResponse.json({ error: "昵称应为 1–20 个字符" }, { status: 400 });
+    return NextResponse.json({ error: "姓名应为 1–20 个字符" }, { status: 400 });
   }
   if (!Array.isArray(body?.answers)) {
     return NextResponse.json({ error: "请完成全部题目" }, { status: 400 });
