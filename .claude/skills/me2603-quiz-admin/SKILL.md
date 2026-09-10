@@ -201,3 +201,62 @@ curl -s -b "$CJ" -o results.csv \
 - Bulk-resetting all submissions (loop single DELETE)
 - Per-student per-question correctness (stored in DB `correctness_json` but not surfaced by API)
 - Changing teacher password (requires SSH + edit `/var/www/ME2603/.env` + `pm2 restart me2603`)
+
+## Webhook-triggered deploys (HKaliyun self-host)
+
+Deploys no longer flow through GitHub Actions SSH. HKaliyun listens on port 3101 and self-deploys on push-to-main webhooks from GitHub's `hooks` IP range.
+
+### Where things live on HKaliyun
+
+| Path | What |
+| --- | --- |
+| `/opt/me2603-webhook/server.mjs` | Webhook receiver |
+| `/opt/me2603-webhook/refresh-ips.mjs` | Daily GitHub IP allowlist refresher |
+| `/var/www/ME2603/scripts/deploy.sh` | Deploy script (flock + smart-skip + build + restart) |
+| `/etc/me2603-webhook/gh-actions-cidrs.json` | Current GitHub allowlist |
+| `/var/log/me2603-webhook/audit.log` | Every webhook trigger (JSON lines) |
+| `/etc/systemd/system/me2603-webhook-refresh.{service,timer}` | Daily refresh timer |
+
+### View recent deploy triggers
+
+```bash
+ssh HKaliyun 'tail -20 /var/log/me2603-webhook/audit.log'
+```
+
+Each line is one JSON object with `level` ∈ {`ping`, `deploy_trigger`, `deploy_ok`, `deploy_fail`, `reject_ip`, `reject_oversize`, `ignore_event`, `ignore_ref`, `ignore_dedup`, `reject_bad_json`, `request_error`} plus timestamp, remote IP, `delivery_id`, and commit SHA when relevant.
+
+### Tail live deploy output
+
+```bash
+ssh HKaliyun 'tail -f /root/.pm2/logs/me2603-webhook-out.log'
+```
+
+Each deploy is prefixed with a short delivery-ID fragment (e.g. `[deploy:f2ab0438]`) — grep for one to isolate a specific run.
+
+### Force a re-deploy without pushing
+
+```bash
+ssh HKaliyun '/var/www/ME2603/scripts/deploy.sh'
+```
+
+The script exits early when no tracked file changed (`git diff --quiet HEAD@{1} HEAD`). To force a rebuild, temporarily edit the script to skip that check, or push a real commit.
+
+### Refresh the IP allowlist immediately
+
+```bash
+ssh HKaliyun 'systemctl start me2603-webhook-refresh.service'
+```
+
+The timer (`OnCalendar=*-*-* 04:00:00`) normally triggers this daily; running it manually is safe — the script writes to a temp file then atomically renames, and the webhook service auto-reloads when mtime changes.
+
+### Restart the webhook service
+
+```bash
+ssh HKaliyun 'pm2 restart me2603-webhook'
+```
+
+PM2 is configured with `pm2 save` + `pm2 startup` so the service survives reboots.
+
+### Why no HMAC secret
+
+HKaliyun is HTTP (no TLS), and the IP allowlist already drops non-GitHub source IPs at the network layer. Adding HMAC would defend the request body in depth, but the threat model is DoS, not RCE — GitHub can already trigger deploys at will regardless of secret.
