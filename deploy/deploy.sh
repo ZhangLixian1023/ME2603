@@ -23,6 +23,14 @@ fi
 echo "[deploy] new commits detected: ${LOCAL_BEFORE:0:7} -> ${REMOTE:0:7}"
 git pull --ff-only
 
+# An empty commit (or one that only touches non-tracked files) can still
+# advance HEAD without changing any tracked content. Skip the rebuild
+# in that case so a no-op push doesn't bounce the service.
+if git diff --quiet HEAD@{1} HEAD; then
+  echo "[deploy] HEAD advanced but no tracked files changed, skipping build"
+  exit 0
+fi
+
 echo "[deploy] pnpm install"
 pnpm install --frozen-lockfile
 
