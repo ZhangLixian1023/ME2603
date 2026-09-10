@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh GitHub Actions IP whitelist for me2603 webhook
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/me2603-webhook
+ExecStart=/usr/bin/node /opt/me2603-webhook/refresh-ips.mjs
+Nice=10

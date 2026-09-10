@@ -1,40 +1,25 @@
-# This is a basic workflow to help you get started with Actions
+# THIS WORKFLOW IS INTENTIONALLY DISABLED.
+#
+# Deployment no longer flows through GitHub Actions. Instead, HKaliyun runs
+# a webhook receiver (port 3101) that GitHub POSTs to on every push to main.
+# See /opt/me2603-webhook on HKaliyun and /var/www/ME2603/scripts/deploy.sh.
+#
+# This file is kept as a placeholder so future readers don't accidentally
+# re-introduce SSH-from-GitHub-Actions deploys. If you want to re-enable
+# CI-driven deploys, do it in a brand-new workflow file rather than
+# uncommenting below — the SSH key in secrets would need re-issuing too.
 
 name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
   push:
     branches: [ "main" ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
   build:
-    # The type of runner that the job will run on
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      - name: ssh-tool
-        # You may pin to the exact commit or the version.
-        # uses: Comori/ssh@49710215d1c46069e078b707a203644027e9c616
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          port: 22
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-              cd /var/www/ME2603
-              git pull
-              pnpm install --frozen-lockfile
-              pnpm build
-              # 下面是本网站的启动命令
-              pm2 delete me2603 2>/dev/null || true
-              set -a && . ./.env && set +a
-              pm2 start "pnpm start" --name me2603
+      - name: noop
+        run: |
+          echo "This workflow is a no-op. Deploys happen via the webhook receiver on HKaliyun (port 3101)."
+          echo "See .github/workflows/deploy.yml header for context."
