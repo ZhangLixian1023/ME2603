@@ -42,7 +42,7 @@ pm2 delete me2603 2>/dev/null || true
 set -a
 . ./.env
 set +a
-pm2 start "pnpm start" --name me2603
+pm2 start "pnpm start" --name me2603 --cwd /var/www/ME2603
 
 echo "[deploy] done"
 pm2 status me2603
