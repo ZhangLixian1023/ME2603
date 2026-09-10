@@ -2,32 +2,38 @@
 
 一个面向课堂使用的选择题测验网站。教师可以创建、发布和管理测验；学生无需注册账号，通过测验代码、学号和姓名参加答题。
 
-当前版本采用 Docker Compose 部署，正式数据统一保存在 PostgreSQL 中，不再使用 SQLite。
+正式数据保存在 PostgreSQL 中，部署在一台不带 Docker 的 Linux 服务器上。开发者 `git push` 到 `main` 分支后，GitHub 通过 webhook 通知服务器自动重新部署，不需要登录服务器手动操作。
 
-## 系统结构
+## 实际部署情况
+
+生产环境是一台阿里云 ECS（HKaliyun），所有组件都直接装在系统里，没有 Docker，也没有 Nginx 反代：
 
 ```text
-学生/教师浏览器
-       │
-       ▼
-Nginx 反向代理（对外端口）
-       │
-       ▼
-Next.js 应用（不直接暴露）
-       │
-       ▼
-PostgreSQL（Docker 内部网络）
+浏览器  ──HTTP──▶  :3100  (Next.js / pnpm start, 由 pm2 守护)
+                       │
+                       ├─▶  :5432  (PostgreSQL，仅本机监听)
+                       └─▶  :3101  (webhook 接收服务，由 pm2 守护)
+                                      ▲
+GitHub push ──POST──HTTP──▶  :3101/webhook  (带 IP 白名单)
 ```
 
-Docker Compose 会启动三个服务：
+- **Next.js 应用**：监听 `0.0.0.0:3100`，通过 `pm2` 拉起并随开机自启
+- **PostgreSQL**：监听 `127.0.0.1:5432`，由 `quiz` 用户管理 `quiz` 数据库
+- **Webhook 接收服务**：`/opt/me2603-webhook/server.mjs`，监听 `:3101`，只接受来自 GitHub `hooks` IP 段的 POST
+- **SSH 入口**：`/var/www/ME2603/` 是部署目录，`.env` 在该目录下
+- **每日定时任务**：`systemd` timer 每天凌晨刷新 GitHub IP 白名单
 
-- `nginx`：接收浏览器请求并转发给应用
-- `app`：运行 Next.js 网站
-- `postgres`：保存测验、题目、学生学号和成绩
+部署流程（详见后文）：
 
-PostgreSQL 数据保存在 Docker 命名卷 `postgres_data` 中。应用容器本身不保存业务数据。
-
-当前没有图片、附件或视频上传功能，因此没有启动空闲的 MinIO 服务。以后增加文件上传时，应接入 MinIO 或兼容 S3 的对象存储，不应把上传文件保存在应用容器或普通文件服务器中。
+```text
+开发者 git push origin main
+  → GitHub POST 到 HKaliyun:3101/webhook
+  → 服务端校验 IP 白名单 + ref 是 refs/heads/main + 没在 24h 内重投递
+  → 执行 /var/www/ME2603/scripts/deploy.sh
+  → flock 互斥 → git fetch → 比对 HEAD 与 origin/main
+  → 若有新文件改动：git pull → pnpm install → pnpm build → pm2 重启
+  → 若只是空 commit / 无文件变化：跳过重启
+```
 
 ## 当前功能
 
@@ -61,15 +67,174 @@ PostgreSQL 数据保存在 Docker 命名卷 `postgres_data` 中。应用容器�
 - 学生账号和忘记密码
 - 文件上传
 
-## 不安装 Docker：本地预览
+## 服务器部署（不依赖 Docker）
 
-如果只是想查看和试用网站，不需要安装 Docker，也不需要安装 PostgreSQL。
+下面描述的是这台 HKaliyun 实际发生过的事情。同样的步骤可以在任何 Ubuntu 24.04 + Node.js 22 的 Linux 服务器上复刻。
 
-先安装 Node.js 22.5 或更高版本，然后在项目目录运行：
+### 1. 一次性安装基础软件
 
-```powershell
-corepack enable
-corepack prepare pnpm@11.19.0 --activate
+```bash
+# Node.js 22.x
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
+sudo apt install -y nodejs
+
+# PostgreSQL
+sudo apt install -y postgresql postgresql-contrib
+sudo -u postgres createuser quiz --pwprompt
+sudo -u postgres createdb quiz -O quiz
+
+# pnpm（用系统自带版本即可，避免 corepack 的签名验证问题）
+sudo npm install -g pnpm@11.19.0
+
+# pm2
+sudo npm install -g pm2
+pm2 startup systemd   # 跟着输出提示执行 sudo 命令
+```
+
+### 2. 部署代码与配置
+
+```bash
+sudo mkdir -p /var/www/ME2603
+sudo chown $USER:$USER /var/www/ME2603
+git clone https://github.com/ZhangLixian1023/ME2603.git /var/www/ME2603
+cd /var/www/ME2603
+
+cp .env.example .env
+nano .env   # 至少修改 TEACHER_PASSWORD / DATABASE_URL / COOKS_SECURE
+```
+
+`.env` 中关键的几项：
+
+```text
+TEACHER_PASSWORD=教师端登录密码
+DATABASE_URL=postgresql://quiz:你的密码@127.0.0.1:5432/quiz
+DATABASE_POOL_MAX=20
+PORT=3100
+HOSTNAME=0.0.0.0
+COOKIE_SECURE=false   # 走 HTTP，必须 false，否则浏览器拒收 cookie
+```
+
+### 3. 启动 Next.js 应用
+
+```bash
+cd /var/www/ME2603
+pnpm install --frozen-lockfile
+pnpm build
+pm2 start "pnpm start" --name me2603
+pm2 save   # 把当前进程列表写入开机自启
+```
+
+之后所有重启 / 构建都在 webhook 触发的部署脚本里完成，不需要再手动跑这三行。
+
+### 4. 配置 GitHub Webhook self-host
+
+服务器本身有一个 webhook 接收进程在 :3101 监听，只接受 GitHub 的 POST。
+
+**服务器端**（HKaliyun 上已经做好的步骤，正常运维不需要重做）：
+
+```bash
+sudo mkdir -p /opt/me2603-webhook /etc/me2603-webhook /var/log/me2603-webhook
+
+# 复制三个文件到 /opt/me2603-webhook/：
+#   server.mjs          webhook 接收服务
+#   refresh-ips.mjs     每天凌晨拉 GitHub IP 白名单
+#   package.json        "type":"module"，无运行时依赖
+
+# 安装 systemd 每天刷 IP 的 timer
+sudo cp deploy/me2603-webhook-refresh.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now me2603-webhook-refresh.timer
+
+# 启动 webhook 服务
+pm2 start /opt/me2603-webhook/server.mjs --name me2603-webhook
+pm2 save
+```
+
+源码都在仓库的 `deploy/` 目录，每次更新代码时 `git pull` 会自动拉取最新版本（部署脚本会同步重启 `me2603-webhook` 进程）。
+
+**GitHub 端**：
+
+仓库 → Settings → Webhooks → Add webhook：
+
+| 字段 | 值 |
+| --- | --- |
+| Payload URL | `http://你的服务器IP:3101/webhook` |
+| Content type | `application/json` |
+| Secret | *留空* |
+| SSL verification | ☐ Disable（走 HTTP） |
+| Which events | ☑ Just the push event |
+
+保存后 GitHub 会立刻发 `ping`，在 webhook 详情的 Recent deliveries 看到 `200` 即通。
+
+### 5. 防火墙 (ufw)
+
+```bash
+sudo ufw allow 3100/tcp comment "me2603 web"
+sudo ufw allow 3101/tcp comment "github-webhook"
+sudo ufw allow 22/tcp    comment "ssh"
+
+# 想收紧 SSH 仅自己访问：
+# sudo ufw delete allow 22/tcp
+# sudo ufw allow from 你家IP to any port 22 proto tcp comment "ssh-from-home"
+```
+
+**不要把 5432 暴露到公网**——PostgreSQL 只对 127.0.0.1 监听。
+
+### 6. 部署脚本做了什么
+
+`/var/www/ME2603/scripts/deploy.sh` 由 webhook 服务调用，逻辑：
+
+```bash
+flock -n /var/lock/me2603-deploy.lock    # 互斥，避免并发跑两次
+cd /var/www/ME2603
+git fetch origin main
+[ HEAD = origin/main ] && exit 0          # 没新东西，跳过
+git pull --ff-only
+git diff --quiet HEAD@{1} HEAD && exit 0  # 只是空 commit，跳过
+pnpm install --frozen-lockfile
+pnpm build
+pm2 delete me2603 2>/dev/null || true
+. ./.env && pm2 start "pnpm start" --name me2603
+```
+
+## 服务器日常运维
+
+```bash
+# 应用状态
+ssh HKaliyun 'pm2 list'
+ssh HKaliyun 'pm2 show me2603'
+
+# 看日志
+ssh HKaliyun 'pm2 logs me2603 --lines 50'
+ssh HKaliyun 'pm2 logs me2603-webhook --lines 50'
+
+# 重启
+ssh HKaliyun 'pm2 restart me2603'
+ssh HKaliyun 'pm2 restart me2603-webhook'
+
+# 手动触发一次部署（当本地 = origin/main 时会跳过）
+ssh HKaliyun '/var/www/ME2603/scripts/deploy.sh'
+
+# webhook 触发审计日志（JSON lines，每行一条）
+ssh HKaliyun 'tail -20 /var/log/me2603-webhook/audit.log'
+
+# webhook 实时部署输出
+ssh HKaliyun 'tail -f /root/.pm2/logs/me2603-webhook-out.log'
+
+# 手动刷新 GitHub IP 白名单（正常情况每天 systemd timer 自动跑）
+ssh HKaliyun 'sudo systemctl start me2603-webhook-refresh.service'
+
+# 直接登录 PostgreSQL
+ssh HKaliyun 'psql -U quiz -d quiz -h 127.0.0.1'
+```
+
+## 本地预览（不依赖 Docker、不依赖 PostgreSQL）
+
+只想本地看效果、做界面调试：
+
+```bash
+git clone https://github.com/ZhangLixian1023/ME2603
+cd ME2603
 pnpm install
 pnpm preview
 ```
@@ -78,94 +243,36 @@ pnpm preview
 
 - 学生端：<http://localhost:3100>
 - 教师端：<http://localhost:3100/teacher>
-- 教师密码：`teacher123`
+- 教师密码：`teacher123`（写在 `.env.example` 里）
 - 示例测验代码：`DEMO26`
 
-预览模式支持创建题目、发布/下线、学生提交、排行榜、重答和 CSV 下载。它使用进程内存，不使用 SQLite，也不会写入本地数据库文件。
+预览模式用进程内存存数据，`Ctrl + C` 后会丢失。**正式数据一定走 PostgreSQL**。
 
-预览模式的数据是临时的：按 `Ctrl + C` 停止服务或重启电脑后，新增测验和学生答卷会自动清空。正式使用必须采用后文的 Docker + PostgreSQL 部署方式。
+## 本地开发（连接 PostgreSQL）
 
-## 最简单的 Docker 启动方法
+需要真正改代码、改数据库时：
 
-### 1. 安装软件
+```bash
+# 在自己机器上装 PostgreSQL（不是 Docker），创建 quiz/quiz 用户和数据库
+# 或在 .env 里把 DATABASE_URL 指向远程开发库
 
-请安装：
+cp .env.example .env
+# 编辑 .env，把 DATABASE_URL 指向自己的库
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- Git（只有上传或克隆 GitHub 时需要）
-
-启动 Docker Desktop，等待它显示 Docker Engine 正常运行。
-
-### 2. 创建配置文件
-
-在项目目录打开 PowerShell：
-
-```powershell
-Copy-Item .env.example .env
+pnpm install
+pnpm dev   # next dev，热更新
 ```
 
-用记事本或编辑器打开 `.env`，至少修改下面三项：
+`.env` 中 `PGHOST` 应为 `127.0.0.1`，`PGPASSWORD` 与 `POSTGRES_PASSWORD` 一致。
 
-```text
-POSTGRES_PASSWORD=数据库强密码
-TEACHER_PASSWORD=教师端登录密码
-SESSION_SECRET=至少32位的随机字符串
-```
+## Webhook 部署的安全考量
 
-`POSTGRES_PASSWORD` 建议只使用大小写字母、数字、下划线和连字符。`.env` 已被 Git 忽略，不能上传到 GitHub。
+- **IP 白名单是核心防线**。webhook 接收服务只接受 GitHub `hooks` IP 段（4 个 IPv4 + 2 个 IPv6 CIDR）的 POST。任何伪造请求都会在网络层被拒，连 HMAC 都不用配。
+- **没有 SSH 跨主机**。GitHub 仓库设置里没有存任何 SSH 私钥，攻击者拿到 GitHub 凭据也连不到服务器，只能触发一次部署（而且部署逻辑是写死的）。
+- **空 commit 不会重启服务**。`git diff --quiet HEAD@{1} HEAD` 确保只有文件内容变化才重建。
+- **并发锁**。`flock` 防止两个 webhook 同时到达时跑两次 build。
 
-### 3. 启动整个系统
-
-```powershell
-docker compose up -d --build
-```
-
-第一次启动需要下载镜像并构建应用，通常会比以后启动慢。
-
-启动完成后打开：
-
-- 学生首页：<http://localhost:3000>
-- 教师后台：<http://localhost:3000/teacher>
-- 健康检查：<http://localhost:3000/api/health>
-- 示例测验代码：`DEMO26`
-
-教师密码是 `.env` 中的 `TEACHER_PASSWORD`。
-
-### 4. 查看运行状态
-
-```powershell
-docker compose ps
-```
-
-三个服务都显示正常或 `healthy` 即可。查看应用日志：
-
-```powershell
-docker compose logs -f app
-```
-
-按 `Ctrl + C` 只会退出日志查看，不会停止网站。
-
-### 5. 停止或重新启动
-
-停止网站但保留数据库：
-
-```powershell
-docker compose down
-```
-
-重新启动：
-
-```powershell
-docker compose up -d
-```
-
-更新代码后重新构建并启动：
-
-```powershell
-docker compose up -d --build
-```
-
-> 不要随意运行 `docker compose down -v`。其中的 `-v` 会删除 PostgreSQL 数据卷，测验和成绩将丢失。
+完整设计见 `.claude/skills/me2603-quiz-admin/SKILL.md`。
 
 ## 从旧版 SQLite 切换
 
@@ -175,78 +282,47 @@ docker compose up -d --build
 
 ## PostgreSQL 配置
 
-Docker Compose 使用下面这些环境变量：
+直接安装在系统上的 PostgreSQL，通过 `.env` 配置：
 
 | 变量 | 用途 |
 | --- | --- |
-| `POSTGRES_DB` | 数据库名称 |
-| `POSTGRES_USER` | 数据库用户 |
-| `POSTGRES_PASSWORD` | 数据库密码 |
+| `DATABASE_URL` | `postgresql://用户:密码@地址:5432/数据库` |
 | `DATABASE_POOL_MAX` | 应用连接池上限，默认 20 |
 | `DATA_RETENTION_DAYS` | 答卷保留天数，默认 365 |
-| `APP_PORT` | 网站对外端口，默认 3000 |
 
-使用阿里云、腾讯云或其他托管 PostgreSQL 时，也可以直接配置：
+托管数据库（阿里云 RDS、腾讯云 CDB 等）也可以直接配置 `DATABASE_URL` 远程使用：
 
 ```text
 DATABASE_URL=postgresql://用户名:密码@数据库地址:5432/数据库名
 ```
 
-托管数据库应开启自动备份。GitHub 和应用容器都不会替你备份数据库。
-
-## 连接 PostgreSQL 的本地开发方式
-
-如果需要直接修改代码、使用热更新，并把数据写入 PostgreSQL：
-
-```powershell
-docker compose up -d postgres
-corepack enable
-corepack prepare pnpm@11.19.0 --activate
-pnpm install
-pnpm dev
-```
-
-此时 `.env` 中的 `PGHOST` 应为 `127.0.0.1`，而且 `PGPASSWORD` 必须和 `POSTGRES_PASSWORD` 相同。
+托管数据库应开启自动备份。GitHub 和应用都不会替你备份数据库。
 
 ## 常用检查命令
 
 | 命令 | 用途 |
 | --- | --- |
-| `docker compose up -d --build` | 构建并启动整个系统 |
-| `docker compose ps` | 查看容器状态 |
-| `docker compose logs -f app` | 查看应用日志 |
-| `docker compose down` | 停止服务但保留数据 |
-| `pnpm preview` | 不依赖 Docker，在 3100 端口启动临时内存预览 |
+| `ssh HKaliyun 'pm2 list'` | 查看两个守护进程状态 |
+| `ssh HKaliyun 'pm2 logs me2603'` | 跟踪应用日志 |
+| `ssh HKaliyun 'pm2 restart me2603'` | 重启 Next.js 应用 |
+| `ssh HKaliyun 'pm2 logs me2603-webhook'` | webhook 接收服务日志 |
+| `ssh HKaliyun 'tail -20 /var/log/me2603-webhook/audit.log'` | webhook 触发历史 |
+| `pnpm preview` | 不依赖数据库，3100 启动内存预览 |
+| `pnpm dev` | 热更新开发模式 |
 | `pnpm lint` | 检查代码规范 |
 | `pnpm build` | 检查正式构建 |
-| `pnpm smoke` | 对运行在 3000 端口的网站进行基础功能测试 |
+| `pnpm smoke` | 对运行中的网站进行端到端 API 测试 |
 
 ## 上传到 GitHub
 
-1. 在 GitHub 创建一个空仓库，建议先选择 **Private**。
-2. 不要让 GitHub 自动创建 README 或 `.gitignore`。
-3. 在项目目录运行：
+仓库已在 <https://github.com/ZhangLixian1023/ME2603>。
 
-```powershell
-git add .
-git commit -m "Add PostgreSQL Docker Compose deployment"
-git branch -M main
-git remote add origin 你的GitHub仓库地址
-git push -u origin main
-```
+更新流程：本地改完 `git push`，GitHub 通知 webhook，服务器自动拉代码 + 部署。
 
-后续更新：
-
-```powershell
-git add .
-git commit -m "描述本次修改"
-git push
-```
-
-以下内容不会上传：
+以下内容不会上传（已被 `.gitignore` 排除）：
 
 - `.env` 和 `.env.local`
-- PostgreSQL 数据卷
+- PostgreSQL 数据卷（数据库是单独的，跟代码无关）
 - 旧版 SQLite 数据
 - `node_modules` 和 `.next`
 - 临时文件、构建产物和本地备份
@@ -254,29 +330,38 @@ git push
 ## 项目结构
 
 ```text
-quiz-mvp/
-├─ docker/
-│  └─ nginx.conf          Nginx 反向代理配置
-├─ public/                静态资源
-├─ scripts/               基础功能测试脚本
-├─ src/app/               页面和后端 API
-├─ src/components/        教师端、学生端和排行榜组件
-├─ src/lib/               PostgreSQL、登录和安全逻辑
-├─ .dockerignore          Docker 构建排除规则
-├─ .env.example           配置示例
-├─ docker-compose.yml     整体部署脚本
-├─ Dockerfile             Next.js 应用镜像
-├─ package.json           项目命令和依赖
-└─ README.md              本说明文件
+ME2603/
+├─ deploy/                     服务器运维脚本（不是 Next.js 的一部分）
+│  ├─ server.mjs                  webhook 接收服务
+│  ├─ refresh-ips.mjs             每天刷 GitHub IP 白名单
+│  ├─ deploy.sh                   webhook 触发的部署脚本
+│  ├─ me2603-webhook-refresh.service
+│  ├─ me2603-webhook-refresh.timer
+│  └─ webhook-package.json
+├─ public/                     静态资源
+├─ scripts/                    基础功能测试脚本
+│  ├─ preview.mjs                 内存模式预览
+│  └─ smoke.mjs                    API 端到端测试
+├─ src/app/                    页面和后端 API
+├─ src/components/             教师端、学生端和排行榜组件
+├─ src/lib/                    PostgreSQL、登录和安全逻辑
+├─ .env.example                配置示例
+├─ next.config.ts
+├─ package.json                项目命令和依赖
+└─ README.md                   本说明文件
 ```
+
+老的 `Dockerfile`、`docker-compose.yml`、`docker/` 目录仍保留在仓库里——是从上游 fork 来的，未删除仅为保留参考。**当前生产环境并不使用 Docker**。
 
 ## 上线前检查
 
-1. 更换数据库密码、教师密码和 `SESSION_SECRET`。
-2. 为正式域名配置 HTTPS。
-3. 开启 PostgreSQL 每日自动备份。
-4. 使用接近真实课堂人数的规模进行一次并发测试。
-5. 限制服务器防火墙，只对公网开放 HTTP/HTTPS 和必要的 SSH 端口，不要开放 PostgreSQL 端口。
+1. 更换数据库密码、教师密码。
+2. ufw 已经把 5432 留作 127.0.0.1，公网只开 3100、3101、22。
+3. `.env` 中的 `COOKIE_SECURE` 与实际协议一致（HTTP 必须 `false`，否则浏览器拒收 cookie）。
+4. GitHub webhook 配置已加入，Recent deliveries 中 `ping` 返回 200。
+5. 推一次真实改动，确认 webhook → 部署 → 应用健康（`curl http://IP:3100/api/health` 返回 `{"status":"ok"}`）。
+6. `pm2 save` 已经执行，重启服务器后两个进程都会自启。
+7. 考虑加 HTTPS（目前为 HTTP）：申请域名 + Let's Encrypt + nginx 反代 + `COOKIE_SECURE=true`。
 
 ## 隐私提醒
 
