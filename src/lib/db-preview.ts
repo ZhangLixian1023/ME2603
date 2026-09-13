@@ -1,6 +1,7 @@
 import "server-only";
 
-import type { PublicQuiz, QuestionInput, QuizInput, QuizResults } from "./db-types";
+import { randomUUID } from "node:crypto";
+import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, RosterStudent, QaItem, ResourceItem } from "./db-types";
 
 type PreviewQuestion = QuestionInput & { id: number };
 type PreviewQuiz = {
@@ -29,6 +30,12 @@ type PreviewStore = {
   nextQuizId: number;
   nextQuestionId: number;
   nextSubmissionId: number;
+  students: Array<{ studentId: string; name: string; active: boolean }>;
+  rosterImports: Map<string, RosterStudent[]>;
+  qa: Array<{ id: number; studentId: string; studentName: string; question: string; imageKey?: string | null; answer?: string | null; createdAt: string; answeredAt?: string | null }>;
+  resources: Array<{ id: number; title: string; filename: string; mimeType: string; size: number; objectKey: string; createdAt: string }>;
+  nextQaId: number;
+  nextResourceId: number;
 };
 
 const codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -69,6 +76,12 @@ function createStore(): PreviewStore {
     nextQuizId: 2,
     nextQuestionId: questions.length + 1,
     nextSubmissionId: 1,
+    students: [{ studentId: "20260001", name: "Demo Student", active: true }],
+    rosterImports: new Map(),
+    qa: [],
+    resources: [],
+    nextQaId: 1,
+    nextResourceId: 1,
   };
 }
 
@@ -106,9 +119,11 @@ export async function checkDatabase() {
 
 export async function createQuiz(input: QuizInput) {
   const state = store();
+  const code = input.code?.trim().toUpperCase() || generateCode();
+  if (state.quizzes.some((quiz) => quiz.code === code)) throw new Error("QUIZ_CODE_EXISTS");
   const quiz: PreviewQuiz = {
     id: state.nextQuizId++,
-    code: generateCode(),
+    code,
     title: input.title,
     description: input.description || "",
     isPublished: Boolean(input.published),
@@ -301,6 +316,18 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
 
   return {
     quiz: { id: quiz.id, code: quiz.code, title: quiz.title },
+    statistics: {
+      submissionCount: submissions.length,
+      averageScore: submissions.length ? submissions.reduce((sum, item) => sum + item.score, 0) / submissions.length : 0,
+      averageAccuracy: submissions.length && quiz.questions.length ? submissions.reduce((sum, item) => sum + item.score, 0) / (submissions.length * quiz.questions.length) : 0,
+      questions: quiz.questions.map((question, index) => {
+        const correctCount = submissions.filter((submission) => {
+          const original = state.submissions.find((candidate) => candidate.id === submission.id);
+          return Boolean(original?.correctness[index]);
+        }).length;
+        return { questionId: question.id, prompt: question.prompt, correctCount, responseCount: submissions.length, accuracy: submissions.length ? correctCount / submissions.length : 0 };
+      }),
+    },
     submissions,
   };
 }
@@ -312,3 +339,58 @@ export async function deleteSubmission(id: number) {
   state.submissions.splice(index, 1);
   return 1;
 }
+
+export async function authenticateStudent(studentId: string, password: string) {
+  const student = store().students.find((item) => item.active && item.studentId.toLowerCase() === studentId.toLowerCase());
+  if (!student || password !== `${student.studentId}2605`) return null;
+  return { studentId: student.studentId, name: student.name };
+}
+
+export async function getStudent(studentId: string) {
+  const student = store().students.find((item) => item.active && item.studentId.toLowerCase() === studentId.toLowerCase());
+  return student ? { studentId: student.studentId, name: student.name } : null;
+}
+
+function normalizeRoster(students: RosterStudent[]) {
+  const unique = new Map<string, RosterStudent>();
+  for (const student of students) unique.set(student.studentId.toLowerCase(), { studentId: student.studentId.trim(), name: student.name.trim() });
+  return [...unique.values()];
+}
+
+export async function previewRoster(students: RosterStudent[]) {
+  const state = store(); const incoming = normalizeRoster(students);
+  const currentMap = new Map(state.students.map((item) => [item.studentId.toLowerCase(), item]));
+  const keys = new Set(incoming.map((item) => item.studentId.toLowerCase()));
+  const add = incoming.filter((item) => !currentMap.has(item.studentId.toLowerCase()));
+  const update = incoming.flatMap((item) => { const old = currentMap.get(item.studentId.toLowerCase()); return old && (old.name !== item.name || !old.active) ? [{ ...item, previousName: old.name }] : []; });
+  const deactivate = state.students.filter((item) => item.active && !keys.has(item.studentId.toLowerCase())).map(({ studentId, name }) => ({ studentId, name }));
+  const token = randomUUID(); state.rosterImports.set(token, incoming);
+  return { token, total: incoming.length, add, update, deactivate, unchanged: incoming.length - add.length - update.length };
+}
+
+export async function syncRoster(token: string) {
+  const state = store(); const students = state.rosterImports.get(token); if (!students) throw new Error("ROSTER_IMPORT_EXPIRED");
+  const keys = new Set(students.map((item) => item.studentId.toLowerCase()));
+  state.students.forEach((item) => { if (!keys.has(item.studentId.toLowerCase())) item.active = false; });
+  for (const student of students) { const existing = state.students.find((item) => item.studentId.toLowerCase() === student.studentId.toLowerCase()); if (existing) Object.assign(existing, { name: student.name, active: true }); else state.students.push({ ...student, active: true }); }
+  state.rosterImports.delete(token); return { active: students.length };
+}
+
+export async function listQa(teacher = false): Promise<QaItem[]> {
+  return [...store().qa].reverse().map((item) => ({ ...item, studentId: teacher ? item.studentId : undefined }));
+}
+
+export async function createQa(studentId: string, question: string, imageKey?: string | null, guestName?: string) {
+  const state = store(); const student = guestName ? { studentId, name: guestName } : await getStudent(studentId); if (!student) throw new Error("STUDENT_NOT_FOUND");
+  const item = { id: state.nextQaId++, studentId: student.studentId, studentName: student.name, question, imageKey, answer: null, createdAt: new Date().toISOString(), answeredAt: null };
+  state.qa.push(item); return { id: item.id };
+}
+
+export async function answerQa(id: number, answer: string) {
+  const item = store().qa.find((candidate) => candidate.id === id); if (!item) return 0; item.answer = answer; item.answeredAt = new Date().toISOString(); return 1;
+}
+
+export async function listResources(): Promise<ResourceItem[]> { return [...store().resources].reverse().map((item) => ({ id:item.id,title:item.title,filename:item.filename,mimeType:item.mimeType,size:item.size,createdAt:item.createdAt })); }
+export async function createResource(title: string, filename: string, mimeType: string, size: number, objectKey: string) { const state = store(); const item = { id: state.nextResourceId++, title, filename, mimeType, size, objectKey, createdAt: new Date().toISOString() }; state.resources.push(item); return { id: item.id }; }
+export async function getResource(id: number): Promise<(ResourceItem & { objectKey:string }) | null> { return store().resources.find((item) => item.id === id) || null; }
+export async function deleteResource(id: number) { const state = store(); const index = state.resources.findIndex((item) => item.id === id); if (index < 0) return null; const [item] = state.resources.splice(index, 1); return { objectKey: item.objectKey }; }

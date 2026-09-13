@@ -10,7 +10,7 @@ import { useLanguage } from "@/components/LanguageProvider";
 export default function Home() {
   const [code, setCode] = useState("");
   const router = useRouter();
-  const { t } = useLanguage();
+  const { language, t } = useLanguage();
 
   function join(event: FormEvent) {
     event.preventDefault();
@@ -24,6 +24,7 @@ export default function Home() {
         <Brand />
         <div className="topbar-actions">
           <LanguageToggle />
+          <Link className="nav-link" href="/student">{language === "zh" ? "学生入口" : "Student access"} <span>→</span></Link>
           <Link className="nav-link" href="/teacher">{t("teacherEntry")} <span>→</span></Link>
         </div>
       </nav>

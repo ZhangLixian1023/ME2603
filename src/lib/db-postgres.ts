@@ -1,7 +1,9 @@
 import "server-only";
 
 import postgres, { type Sql } from "postgres";
-import type { PublicQuiz, QuestionInput, QuizInput, QuizResults } from "./db-types";
+import { randomUUID } from "node:crypto";
+import { hashPassword, verifyPassword } from "./auth";
+import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, RosterStudent, QaItem, ResourceItem } from "./db-types";
 
 const retentionDays = Math.max(1, Number(process.env.DATA_RETENTION_DAYS) || 365);
 const codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -107,10 +109,52 @@ async function ensurePostgres() {
         submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )`;
 
+    await sql`
+      CREATE TABLE IF NOT EXISTS students (
+        student_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        password_salt TEXT NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS roster_imports (
+        token TEXT PRIMARY KEY,
+        students_json JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS qa_posts (
+        id BIGSERIAL PRIMARY KEY,
+        student_id TEXT REFERENCES students(student_id) ON DELETE SET NULL,
+        student_name TEXT NOT NULL,
+        question TEXT NOT NULL,
+        image_key TEXT,
+        answer TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        answered_at TIMESTAMPTZ
+      )`;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS resources (
+        id BIGSERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes BIGINT NOT NULL,
+        object_key TEXT NOT NULL UNIQUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`;
+
     await sql`CREATE INDEX IF NOT EXISTS questions_quiz_position_idx ON questions (quiz_id, position)`;
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS submissions_quiz_student_unique ON submissions (quiz_id, lower(student_id))`;
     await sql`CREATE INDEX IF NOT EXISTS submissions_leaderboard_idx ON submissions (quiz_id, score DESC, submitted_at ASC)`;
+    await sql`CREATE INDEX IF NOT EXISTS qa_posts_created_idx ON qa_posts (created_at DESC)`;
     await sql`DELETE FROM submissions WHERE submitted_at < NOW() - (${retentionDays} * INTERVAL '1 day')`;
+    await sql`DELETE FROM roster_imports WHERE created_at < NOW() - INTERVAL '1 hour'`;
 
     const [{ count }] = await sql`SELECT COUNT(*)::int AS count FROM quizzes`;
     if (Number(count) === 0) {
@@ -163,6 +207,16 @@ export async function checkDatabase() {
 
 export async function createQuiz(input: QuizInput) {
   await ensurePostgres();
+
+  const customCode = input.code?.trim().toUpperCase();
+  if (customCode) {
+    try {
+      return await insertPostgresQuiz(pg(), input, customCode);
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new Error("QUIZ_CODE_EXISTS");
+      throw error;
+    }
+  }
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
@@ -369,16 +423,31 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
       nickname,
       score,
       total,
-      submitted_at AS "submittedAt"
+      submitted_at AS "submittedAt",
+      correctness_json AS "correctnessJson"
     FROM submissions
     WHERE quiz_id = ${id}
     ORDER BY score DESC, submitted_at ASC`;
 
+  const questions = await pg()`SELECT id, prompt FROM questions WHERE quiz_id = ${id} ORDER BY position`;
+  const correctnessRows = submissions.map((submission) => Array.isArray(submission.correctnessJson) ? submission.correctnessJson.map(Boolean) : JSON.parse(String(submission.correctnessJson)).map(Boolean));
+  const submissionCount = submissions.length;
+  const totalScore = submissions.reduce((sum, submission) => sum + Number(submission.score), 0);
+  const totalQuestions = questions.length;
   return {
     quiz: {
       id: Number(quiz.id),
       code: String(quiz.code),
       title: String(quiz.title),
+    },
+    statistics: {
+      submissionCount,
+      averageScore: submissionCount ? totalScore / submissionCount : 0,
+      averageAccuracy: submissionCount && totalQuestions ? totalScore / (submissionCount * totalQuestions) : 0,
+      questions: questions.map((question, index) => {
+        const correctCount = correctnessRows.filter((row) => row[index]).length;
+        return { questionId: Number(question.id), prompt: String(question.prompt), correctCount, responseCount: submissionCount, accuracy: submissionCount ? correctCount / submissionCount : 0 };
+      }),
     },
     submissions: submissions.map((submission) => ({
       id: Number(submission.id),
@@ -395,4 +464,109 @@ export async function deleteSubmission(id: number) {
   await ensurePostgres();
   const rows = await pg()`DELETE FROM submissions WHERE id = ${id} RETURNING id`;
   return rows.length;
+}
+
+export async function authenticateStudent(studentId: string, password: string) {
+  await ensurePostgres();
+  const [student] = await pg()`SELECT student_id AS "studentId", name, password_hash AS "passwordHash", password_salt AS "passwordSalt" FROM students WHERE lower(student_id) = lower(${studentId}) AND active = TRUE`;
+  if (!student || !verifyPassword(password, String(student.passwordSalt), String(student.passwordHash))) return null;
+  return { studentId: String(student.studentId), name: String(student.name) };
+}
+
+export async function getStudent(studentId: string) {
+  await ensurePostgres();
+  const [student] = await pg()`SELECT student_id AS "studentId", name FROM students WHERE lower(student_id) = lower(${studentId}) AND active = TRUE`;
+  return student ? { studentId: String(student.studentId), name: String(student.name) } : null;
+}
+
+function normalizeRoster(students: RosterStudent[]) {
+  const unique = new Map<string, RosterStudent>();
+  for (const student of students) unique.set(student.studentId.toLowerCase(), { studentId: student.studentId.trim(), name: student.name.trim() });
+  return [...unique.values()];
+}
+
+export async function previewRoster(students: RosterStudent[]) {
+  await ensurePostgres();
+  const incoming = normalizeRoster(students);
+  const current = await pg()`SELECT student_id AS "studentId", name, active FROM students`;
+  const currentMap = new Map(current.map((item) => [String(item.studentId).toLowerCase(), item]));
+  const incomingKeys = new Set(incoming.map((item) => item.studentId.toLowerCase()));
+  const add = incoming.filter((item) => !currentMap.has(item.studentId.toLowerCase()));
+  const update = incoming.flatMap((item) => {
+    const old = currentMap.get(item.studentId.toLowerCase());
+    return old && (String(old.name) !== item.name || !old.active) ? [{ ...item, previousName: String(old.name) }] : [];
+  });
+  const deactivate = current.filter((item) => item.active && !incomingKeys.has(String(item.studentId).toLowerCase())).map((item) => ({ studentId: String(item.studentId), name: String(item.name) }));
+  const token = randomUUID();
+  await pg()`INSERT INTO roster_imports (token, students_json) VALUES (${token}, ${pg().json(incoming)})`;
+  return { token, total: incoming.length, add, update, deactivate, unchanged: incoming.length - add.length - update.length };
+}
+
+export async function syncRoster(token: string) {
+  await ensurePostgres();
+  return pg().begin(async (tx) => {
+    const [draft] = await tx`DELETE FROM roster_imports WHERE token = ${token} AND created_at >= NOW() - INTERVAL '1 hour' RETURNING students_json AS "studentsJson"`;
+    if (!draft) throw new Error("ROSTER_IMPORT_EXPIRED");
+    const students = (Array.isArray(draft.studentsJson) ? draft.studentsJson : JSON.parse(String(draft.studentsJson))) as RosterStudent[];
+    const ids = students.map((student) => student.studentId.toLowerCase());
+    if (ids.length) await tx`UPDATE students SET active = FALSE, updated_at = NOW() WHERE active = TRUE AND lower(student_id) NOT IN ${tx(ids)}`;
+    else await tx`UPDATE students SET active = FALSE, updated_at = NOW() WHERE active = TRUE`;
+    for (const student of students) {
+      const existing = await tx`SELECT student_id FROM students WHERE lower(student_id) = lower(${student.studentId})`;
+      if (existing.length) {
+        await tx`UPDATE students SET name = ${student.name}, active = TRUE, updated_at = NOW() WHERE lower(student_id) = lower(${student.studentId})`;
+      } else {
+        const password = hashPassword(`${student.studentId}2605`);
+        await tx`INSERT INTO students (student_id, name, password_hash, password_salt) VALUES (${student.studentId}, ${student.name}, ${password.hash}, ${password.salt})`;
+      }
+    }
+    return { active: students.length };
+  });
+}
+
+export async function listQa(teacher = false): Promise<QaItem[]> {
+  await ensurePostgres();
+  const rows = await pg()`SELECT id, student_id AS "studentId", student_name AS "studentName", question, image_key AS "imageKey", answer, created_at AS "createdAt", answered_at AS "answeredAt" FROM qa_posts ORDER BY created_at DESC`;
+  return rows.map((row) => ({ id:Number(row.id), studentId:teacher?String(row.studentId||""):undefined, studentName:String(row.studentName), question:String(row.question), imageKey:row.imageKey?String(row.imageKey):null, answer:row.answer?String(row.answer):null, createdAt:String(row.createdAt), answeredAt:row.answeredAt?String(row.answeredAt):null }));
+}
+
+export async function createQa(studentId: string, question: string, imageKey?: string | null, guestName?: string) {
+  await ensurePostgres();
+  if (guestName) {
+    const [row] = await pg()`INSERT INTO qa_posts (student_id, student_name, question, image_key) VALUES (NULL, ${guestName}, ${question}, ${imageKey || null}) RETURNING id`;
+    return { id: Number(row.id) };
+  }
+  const student = await getStudent(studentId); if (!student) throw new Error("STUDENT_NOT_FOUND");
+  const [row] = await pg()`INSERT INTO qa_posts (student_id, student_name, question, image_key) VALUES (${student.studentId}, ${student.name}, ${question}, ${imageKey || null}) RETURNING id`;
+  return { id: Number(row.id) };
+}
+
+export async function answerQa(id: number, answer: string) {
+  await ensurePostgres();
+  const rows = await pg()`UPDATE qa_posts SET answer = ${answer}, answered_at = NOW() WHERE id = ${id} RETURNING id`;
+  return rows.length;
+}
+
+export async function listResources(): Promise<ResourceItem[]> {
+  await ensurePostgres();
+  const rows = await pg()`SELECT id, title, filename, mime_type AS "mimeType", size_bytes AS size, created_at AS "createdAt" FROM resources ORDER BY created_at DESC`;
+  return rows.map((row) => ({ id:Number(row.id), title:String(row.title), filename:String(row.filename), mimeType:String(row.mimeType), size:Number(row.size), createdAt:String(row.createdAt) }));
+}
+
+export async function createResource(title: string, filename: string, mimeType: string, size: number, objectKey: string) {
+  await ensurePostgres();
+  const [row] = await pg()`INSERT INTO resources (title, filename, mime_type, size_bytes, object_key) VALUES (${title}, ${filename}, ${mimeType}, ${size}, ${objectKey}) RETURNING id`;
+  return { id: Number(row.id) };
+}
+
+export async function getResource(id: number): Promise<(ResourceItem & { objectKey: string }) | null> {
+  await ensurePostgres();
+  const [row] = await pg()`SELECT id, title, filename, mime_type AS "mimeType", size_bytes AS size, object_key AS "objectKey", created_at AS "createdAt" FROM resources WHERE id = ${id}`;
+  return row ? { id:Number(row.id), title:String(row.title), filename:String(row.filename), mimeType:String(row.mimeType), size:Number(row.size), objectKey:String(row.objectKey), createdAt:String(row.createdAt) } : null;
+}
+
+export async function deleteResource(id: number) {
+  await ensurePostgres();
+  const [row] = await pg()`DELETE FROM resources WHERE id = ${id} RETURNING object_key AS "objectKey"`;
+  return row ? { objectKey: String(row.objectKey) } : null;
 }

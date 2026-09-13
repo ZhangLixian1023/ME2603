@@ -5,6 +5,7 @@ export type QuestionInput = {
 };
 
 export type QuizInput = {
+  code?: string;
   title: string;
   description?: string;
   questions: QuestionInput[];
@@ -20,6 +21,12 @@ export type PublicQuiz = {
 
 export type QuizResults = {
   quiz: { id: number; code: string; title: string };
+  statistics: {
+    submissionCount: number;
+    averageScore: number;
+    averageAccuracy: number;
+    questions: Array<{ questionId: number; prompt: string; correctCount: number; responseCount: number; accuracy: number }>;
+  };
   submissions: Array<{
     id: number;
     studentId: string;
@@ -28,4 +35,34 @@ export type QuizResults = {
     total: number;
     submittedAt: string;
   }>;
+};
+
+export type RosterStudent = { studentId: string; name: string };
+export type RosterPreview = {
+  token: string;
+  total: number;
+  add: RosterStudent[];
+  update: Array<RosterStudent & { previousName: string }>;
+  deactivate: RosterStudent[];
+  unchanged: number;
+};
+
+export type QaItem = {
+  id: number;
+  studentId?: string;
+  studentName: string;
+  question: string;
+  imageKey?: string | null;
+  answer?: string | null;
+  createdAt: string;
+  answeredAt?: string | null;
+};
+
+export type ResourceItem = {
+  id: number;
+  title: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  createdAt: string;
 };

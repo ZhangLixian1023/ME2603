@@ -6,10 +6,12 @@ import Brand from "./Brand";
 import BackHomeLink from "./BackHomeLink";
 import LanguageToggle from "./LanguageToggle";
 import { localizeApiError, useLanguage } from "./LanguageProvider";
+import TeacherTools from "./TeacherTools";
 
 type QuizSummary = { id: number; code: string; title: string; description: string; isPublished: boolean; questionCount: number; submissionCount: number };
 type DraftQuestion = { prompt: string; options: string[]; correctIndex: number };
 type Submission = { id: number; studentId: string; nickname: string; score: number; total: number; submittedAt: string };
+type Statistics = { submissionCount:number; averageScore:number; averageAccuracy:number; questions:Array<{questionId:number;prompt:string;correctCount:number;responseCount:number;accuracy:number}> };
 
 const blankQuestion = (): DraftQuestion => ({ prompt: "", options: ["", "", "", ""], correctIndex: 0 });
 
@@ -20,11 +22,13 @@ export default function TeacherDashboard() {
   const [quizzes, setQuizzes] = useState<QuizSummary[]>([]);
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [quizCode, setQuizCode] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [questions, setQuestions] = useState<DraftQuestion[]>([blankQuestion()]);
   const [activeResults, setActiveResults] = useState<number | null>(null);
   const [results, setResults] = useState<Submission[]>([]);
+  const [statistics, setStatistics] = useState<Statistics | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -51,14 +55,14 @@ export default function TeacherDashboard() {
   async function logout() { await fetch("/api/teacher/logout", { method: "POST" }); setAuth("out"); setQuizzes([]); }
   function updateQuestion(index: number, patch: Partial<DraftQuestion>) { setQuestions((current) => current.map((question, questionIndex) => questionIndex === index ? { ...question, ...patch } : question)); }
   function updateOption(questionIndex: number, optionIndex: number, value: string) { setQuestions((current) => current.map((question, index) => index === questionIndex ? { ...question, options: question.options.map((option, currentOption) => currentOption === optionIndex ? value : option) } : question)); }
-  function openCreate() { setEditingId(null); setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setError(""); setCreating(true); }
+  function openCreate() { setEditingId(null); setQuizCode(""); setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setError(""); setCreating(true); }
 
   async function openEdit(id: number) {
     setBusy(true); setError("");
     const response = await fetch(`/api/teacher/quizzes/${id}`, { cache: "no-store" });
     const data = await response.json(); setBusy(false);
     if (!response.ok) { setError(localizeApiError(data.error, language, "readQuizFailed")); return; }
-    setEditingId(id); setTitle(data.quiz.title); setDescription(data.quiz.description);
+    setEditingId(id); setQuizCode(""); setTitle(data.quiz.title); setDescription(data.quiz.description);
     setQuestions(data.quiz.questions.map((question: DraftQuestion) => ({ prompt: question.prompt, options: question.options, correctIndex: question.correctIndex })));
     setCreating(true);
   }
@@ -67,10 +71,10 @@ export default function TeacherDashboard() {
     event.preventDefault(); setBusy(true); setError(""); setNotice("");
     const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
     const published = submitter?.value === "publish";
-    const response = await fetch(editingId ? `/api/teacher/quizzes/${editingId}` : "/api/teacher/quizzes", { method: editingId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, description, questions, published }) });
+    const response = await fetch(editingId ? `/api/teacher/quizzes/${editingId}` : "/api/teacher/quizzes", { method: editingId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: editingId ? undefined : quizCode, title, description, questions, published }) });
     const data = await response.json(); setBusy(false);
     if (!response.ok) { setError(localizeApiError(data.error, language, "saveFailed")); return; }
-    setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setCreating(false); setEditingId(null);
+    setQuizCode(""); setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setCreating(false); setEditingId(null);
     if (editingId) setNotice(t("quizUpdated"));
     else setNotice(t("quizCreated").replace("{code}", data.quiz.code).replace("{status}", published ? t("studentsCanEnter") : t("publishToOpen")));
     await loadQuizzes();
@@ -97,6 +101,7 @@ export default function TeacherDashboard() {
     const data = await response.json(); setBusy(false);
     if (!response.ok) { setError(localizeApiError(data.error, language, "readResultsFailed")); return; }
     setResults(data.submissions || []);
+    setStatistics(data.statistics || null);
   }
 
   async function resetSubmission(id: number) {
@@ -162,17 +167,19 @@ export default function TeacherDashboard() {
         {activeResults !== null && (
           <section className="results-panel">
             <div className="modal-head"><div><span className="tiny-label">{t("teacherVisible")}</span><h2>{t("studentResults")}</h2></div><button onClick={() => setActiveResults(null)}>×</button></div>
-            {busy ? <p className="empty-state">{t("loading")}</p> : results.length === 0 ? <div className="empty-state"><b>{t("noSubmissions")}</b><p>{t("noSubmissionsDetail")}</p></div> : (
-              <div className="results-table"><div className="results-tr header"><span>{t("nickname")}</span><span>{t("studentId")}</span><span>{t("correctAnswers")}</span><span>{t("action")}</span></div>{results.map((item) => <div className="results-tr" key={item.id}><strong>{item.nickname}</strong><span>{item.studentId}</span><b>{item.score} / {item.total}</b><button onClick={() => resetSubmission(item.id)}>{t("allowRetry")}</button></div>)}</div>
-            )}
+            {statistics && <div className="analytics-summary"><article><span>{language==='zh'?'提交人数':'Submissions'}</span><strong>{statistics.submissionCount}</strong></article><article><span>{language==='zh'?'平均正确题数':'Average score'}</span><strong>{statistics.averageScore.toFixed(1)}</strong></article><article><span>{language==='zh'?'平均正确率':'Average accuracy'}</span><strong>{(statistics.averageAccuracy*100).toFixed(1)}%</strong></article></div>}
+            {statistics && statistics.questions.length>0 && <div className="question-stats">{statistics.questions.map((question,index)=><div key={question.questionId}><span>{index+1}. {question.prompt}</span><b>{(question.accuracy*100).toFixed(1)}% ({question.correctCount}/{question.responseCount})</b></div>)}</div>}
+            {busy ? <p className="empty-state">{t("loading")}</p> : results.length === 0 ? <div className="empty-state"><b>{t("noSubmissions")}</b><p>{t("noSubmissionsDetail")}</p></div> : (<div className="results-table"><div className="results-tr header"><span>{t("nickname")}</span><span>{t("studentId")}</span><span>{t("correctAnswers")}</span><span>{t("action")}</span></div>{results.map((item) => <div className="results-tr" key={item.id}><strong>{item.nickname}</strong><span>{item.studentId}</span><b>{item.score} / {item.total}</b><button onClick={() => resetSubmission(item.id)}>{t("allowRetry")}</button></div>)}</div>)}
           </section>
         )}
+        <TeacherTools />
       </div>
 
       {creating && (
         <div className="modal-backdrop"><section className="create-modal">
           <div className="modal-head"><div><span className="tiny-label">{editingId ? "EDIT QUIZ" : "NEW QUIZ"}</span><h2>{editingId ? t("editQuiz") : t("createQuiz")}</h2></div><button onClick={() => setCreating(false)}>×</button></div>
           <form onSubmit={saveQuiz}>
+            {!editingId && <label className="custom-code-field">{t("customQuizCode")}<input value={quizCode} onChange={(event) => setQuizCode(event.target.value.replace(/\s/g, "").toUpperCase())} placeholder={t("customQuizCodePlaceholder")} minLength={3} maxLength={24} pattern="[A-Za-z0-9][A-Za-z0-9_-]{2,23}" autoComplete="off" spellCheck={false} /><small>{t("customQuizCodeHint")}</small></label>}
             <div className="form-grid"><label>{t("quizTitle")}<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("quizTitlePlaceholder")} maxLength={80} autoFocus /></label><label>{t("shortDescription")}<input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("descriptionPlaceholder")} maxLength={240} /></label></div>
             <div className="question-editor-list">{questions.map((question, questionIndex) => (
               <article className="question-editor" key={questionIndex}>

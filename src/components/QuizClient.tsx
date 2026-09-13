@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import Brand from "./Brand";
 import BackHomeLink from "./BackHomeLink";
 import LanguageToggle from "./LanguageToggle";
@@ -11,14 +12,14 @@ type Quiz = { code: string; title: string; description: string; questions: Array
 type Result = { score: number; total: number; correctness: boolean[] };
 
 export default function QuizClient({ code }: { code: string }) {
+  const router = useRouter();
   const { language, t } = useLanguage();
   const languageRef = useRef(language);
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [identityReady, setIdentityReady] = useState(false);
-  const [studentId, setStudentId] = useState("");
-  const [nickname, setNickname] = useState("");
+  const [student, setStudent] = useState<{ studentId: string; name: string } | null>(null);
   const [answers, setAnswers] = useState<number[]>([]);
   const [result, setResult] = useState<Result | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -28,6 +29,7 @@ export default function QuizClient({ code }: { code: string }) {
   }, [language]);
 
   useEffect(() => {
+    fetch("/api/student/session", { cache: "no-store" }).then((response) => response.json()).then((data) => { setStudent(data.student || null); setIdentityReady(Boolean(data.student)); }).catch(() => null);
     fetch(`/api/quizzes/${encodeURIComponent(code)}`, { cache: "no-store" })
       .then(async (response) => {
         const data = await response.json();
@@ -41,9 +43,7 @@ export default function QuizClient({ code }: { code: string }) {
 
   function begin(event: FormEvent) {
     event.preventDefault();
-    if (!/^[A-Za-z0-9_-]{2,30}$/.test(studentId.trim())) { setError(t("invalidStudentId")); return; }
-    if (!nickname.trim() || nickname.trim().length > 20) { setError(t("invalidNickname")); return; }
-    setError(""); setIdentityReady(true);
+    router.push(`/student?next=${encodeURIComponent(`/quiz/${code}`)}`);
   }
 
   async function submit() {
@@ -53,7 +53,7 @@ export default function QuizClient({ code }: { code: string }) {
     try {
       const response = await fetch(`/api/quizzes/${encodeURIComponent(code)}/submit`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ studentId: studentId.trim(), nickname: nickname.trim(), answers }),
+        body: JSON.stringify({ answers }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(localizeApiError(data.error, language, "submitFailed"));
@@ -92,8 +92,7 @@ export default function QuizClient({ code }: { code: string }) {
         <span className="eyebrow"><i /> {t("readyToStart")}</span><h1>{quiz.title}</h1><p>{quiz.description}</p>
         <div className="quiz-meta"><span>{quiz.questions.length} {t("multipleChoiceQuestions")}</span><span>{t("oneSubmission")}</span></div>
         <form onSubmit={begin}>
-          <label>{t("studentId")} <small>{t("teacherOnly")}</small><input value={studentId} onChange={(event) => setStudentId(event.target.value)} placeholder={t("studentIdPlaceholder")} autoFocus /></label>
-          <label>{t("leaderboardNickname")} <small>{t("publicDisplay")}</small><input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder={t("nicknamePlaceholder")} maxLength={20} /></label>
+          <p>{language === "zh" ? "请先使用学生学号和密码登录，姓名会自动从课程名单读取。" : "Sign in with your student ID and password. Your name will be read from the class roster."}</p>
           {error && <div className="error-box">{error}</div>}
           <button className="primary-button wide" type="submit">{t("startQuiz")} <span>→</span></button>
         </form>
@@ -117,7 +116,7 @@ export default function QuizClient({ code }: { code: string }) {
         </article>
       ))}</section>
       {error && <div className="error-box sticky-error">{error}</div>}
-      <div className="submit-bar"><div><strong>{nickname}</strong><span>{t("answerEveryQuestion")}</span></div><button className="primary-button" onClick={submit} disabled={submitting}>{submitting ? t("submitting") : t("submitAll")}</button></div>
+      <div className="submit-bar"><div><strong>{student?.name}</strong><span>{t("answerEveryQuestion")}</span></div><button className="primary-button" onClick={submit} disabled={submitting}>{submitting ? t("submitting") : t("submitAll")}</button></div>
     </main>
   );
 }
