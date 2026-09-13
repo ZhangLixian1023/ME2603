@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, RosterStudent, QaItem, ResourceItem } from "./db-types";
+import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
 
 type PreviewQuestion = QuestionInput & { id: number };
 type PreviewQuiz = {
@@ -374,6 +374,33 @@ export async function syncRoster(token: string) {
   state.students.forEach((item) => { if (!keys.has(item.studentId.toLowerCase())) item.active = false; });
   for (const student of students) { const existing = state.students.find((item) => item.studentId.toLowerCase() === student.studentId.toLowerCase()); if (existing) Object.assign(existing, { name: student.name, active: true }); else state.students.push({ ...student, active: true }); }
   state.rosterImports.delete(token); return { active: students.length };
+}
+
+export async function getGradebook(): Promise<Gradebook> {
+  const state = store();
+  return {
+    quizzes: state.quizzes.map((quiz) => ({
+      id: quiz.id,
+      code: quiz.code,
+      title: quiz.title,
+      total: quiz.questions.length,
+    })),
+    students: [...state.students]
+      .sort((left, right) => Number(right.active) - Number(left.active) || left.name.localeCompare(right.name) || left.studentId.localeCompare(right.studentId))
+      .map((student) => ({
+        studentId: student.studentId,
+        name: student.name,
+        active: student.active,
+        scores: state.submissions
+          .filter((submission) => submission.studentId.toLowerCase() === student.studentId.toLowerCase())
+          .map((submission) => ({
+            quizId: submission.quizId,
+            score: submission.score,
+            total: submission.total,
+            submittedAt: submission.submittedAt,
+          })),
+      })),
+  };
 }
 
 export async function listQa(teacher = false): Promise<QaItem[]> {

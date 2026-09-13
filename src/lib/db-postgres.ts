@@ -3,7 +3,7 @@ import "server-only";
 import postgres, { type Sql } from "postgres";
 import { randomUUID } from "node:crypto";
 import { hashPassword, verifyPassword } from "./auth";
-import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, RosterStudent, QaItem, ResourceItem } from "./db-types";
+import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
 
 const retentionDays = Math.max(1, Number(process.env.DATA_RETENTION_DAYS) || 365);
 const codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -522,6 +522,67 @@ export async function syncRoster(token: string) {
     }
     return { active: students.length };
   });
+}
+
+export async function getGradebook(): Promise<Gradebook> {
+  await ensurePostgres();
+
+  const quizzes = await pg()`
+    SELECT
+      q.id,
+      q.code,
+      q.title,
+      COUNT(qu.id)::int AS total
+    FROM quizzes q
+    LEFT JOIN questions qu ON qu.quiz_id = q.id
+    GROUP BY q.id
+    ORDER BY q.created_at ASC, q.id ASC`;
+
+  const rows = await pg()`
+    SELECT
+      st.student_id AS "studentId",
+      st.name,
+      st.active,
+      sub.quiz_id AS "quizId",
+      sub.score,
+      sub.total,
+      sub.submitted_at AS "submittedAt"
+    FROM students st
+    LEFT JOIN submissions sub ON lower(sub.student_id) = lower(st.student_id)
+    ORDER BY st.active DESC, st.name ASC, st.student_id ASC, sub.quiz_id ASC`;
+
+  const students = new Map<string, Gradebook["students"][number]>();
+  for (const row of rows) {
+    const studentId = String(row.studentId);
+    let student = students.get(studentId.toLowerCase());
+    if (!student) {
+      student = {
+        studentId,
+        name: String(row.name),
+        active: Boolean(row.active),
+        scores: [],
+      };
+      students.set(studentId.toLowerCase(), student);
+    }
+    if (row.quizId !== null && row.quizId !== undefined) {
+      student.scores.push({
+        quizId: Number(row.quizId),
+        score: Number(row.score),
+        total: Number(row.total),
+        submittedAt: String(row.submittedAt),
+      });
+    }
+  }
+
+  return {
+    quizzes: quizzes.map((quiz) => ({
+      id: Number(quiz.id),
+      code: String(quiz.code),
+      title: String(quiz.title),
+      total: Number(quiz.total),
+    })),
+    students: [...students.values()],
+  };
 }
 
 export async function listQa(teacher = false): Promise<QaItem[]> {

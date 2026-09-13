@@ -54,6 +54,7 @@ GitHub push ──POST──HTTPS──▶  :443/webhook  (IP 白名单)
 - 允许指定学生重新作答
 - 下载 Excel 可直接打开的 UTF-8 CSV 成绩表
 - 上传 Excel 学生名单，预览变更后确认新增、更新或停用账号
+- 查看学生成绩册：按姓名和学号列出每次测验成绩，并保留停用账号的历史记录
 - 查看整套测验与每道题的平均正确率
 - 回答学生问题及查看问题图片
 - 上传和删除 PDF、PPT、Word、Excel、Markdown、JPEG、PNG 课程资料（单文件最大 10 MB）

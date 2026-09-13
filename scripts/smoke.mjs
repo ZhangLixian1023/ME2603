@@ -21,6 +21,9 @@ let studentCookie = "";
 let guestCookie = "";
 
 try {
+  const privateGradebook = await json("/api/teacher/gradebook");
+  assert(privateGradebook.response.status === 401, "未登录用户可以读取学生成绩册");
+
   const login = await json("/api/teacher/login", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ password: process.env.TEACHER_PASSWORD }),
@@ -101,9 +104,19 @@ try {
   const results = await json(`/api/teacher/quizzes/${quizId}/results`, { headers: { cookie } });
   assert(results.response.ok && results.data.submissions.some((item) => item.studentId === "20260001") && results.data.submissions.some((item) => item.studentId === guestId) && results.data.statistics?.averageAccuracy === 1, "教师成绩或统计读取失败");
 
+  const gradebook = await json("/api/teacher/gradebook", { headers: { cookie } });
+  const gradebookStudent = gradebook.data.students?.find((item) => item.studentId === "20260001");
+  assert(
+    gradebook.response.ok &&
+      gradebook.data.quizzes?.some((quiz) => quiz.id === quizId) &&
+      gradebookStudent?.scores.some((score) => score.quizId === quizId && score.score === 1 && score.total === 1) &&
+      !gradebook.data.students?.some((item) => item.studentId === guestId),
+    "学生成绩册数据或访问控制不正确",
+  );
+
   const csv = await fetch(`${base}/api/teacher/quizzes/${quizId}/export`, { headers: { cookie } });
   assert(csv.ok && (await csv.text()).includes("20260001"), "CSV 导出失败");
-  console.log("✓ 注册学生与旁听生登录、自定义测验代码、创建发布、编辑、答题、判分、重复拦截、排行榜、统计与 CSV 导出均通过");
+  console.log("✓ 注册学生与旁听生登录、自定义测验代码、创建发布、编辑、答题、判分、重复拦截、排行榜、成绩册、统计与 CSV 导出均通过");
 } finally {
   if (quizId && cookie) {
     await fetch(`${base}/api/teacher/quizzes/${quizId}`, { method: "DELETE", headers: { cookie } });

@@ -47,6 +47,26 @@ export type RosterPreview = {
   unchanged: number;
 };
 
+export type Gradebook = {
+  quizzes: Array<{
+    id: number;
+    code: string;
+    title: string;
+    total: number;
+  }>;
+  students: Array<{
+    studentId: string;
+    name: string;
+    active: boolean;
+    scores: Array<{
+      quizId: number;
+      score: number;
+      total: number;
+      submittedAt: string;
+    }>;
+  }>;
+};
+
 export type QaItem = {
   id: number;
   studentId?: string;
