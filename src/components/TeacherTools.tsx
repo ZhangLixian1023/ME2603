@@ -43,7 +43,10 @@ export default function TeacherTools() {
   const [studentQuery, setStudentQuery] = useState("");
   const [qa, setQa] = useState<Qa[]>([]);
   const [resources, setResources] = useState<Resource[]>([]);
-  const [message, setMessage] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [rosterMessage, setRosterMessage] = useState("");
+  const [resourceMessage, setResourceMessage] = useState("");
+  const [resourceUploading, setResourceUploading] = useState(false);
 
   const load = useCallback(async () => {
     setGradebookLoading(true);
@@ -64,8 +67,9 @@ export default function TeacherTools() {
       setQa(qaData.items || []);
       setResources(resourceData.resources || []);
       setGradebook(gradebookData);
+      setLoadError("");
     } catch {
-      setMessage(zh ? "部分教师数据加载失败，请刷新重试。" : "Some teacher data could not be loaded. Please refresh and try again.");
+      setLoadError(zh ? "部分教师数据加载失败，请刷新重试。" : "Some teacher data could not be loaded. Please refresh and try again.");
     } finally {
       setGradebookLoading(false);
     }
@@ -88,14 +92,14 @@ export default function TeacherTools() {
 
   async function uploadRoster(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setMessage("");
+    setRosterMessage("");
     const response = await fetch("/api/teacher/roster/preview", {
       method: "POST",
       body: new FormData(event.currentTarget),
     });
     const data = await response.json();
     if (!response.ok) {
-      setMessage(data.error);
+      setRosterMessage(data.error);
       return;
     }
     setPreview(data.preview);
@@ -119,12 +123,12 @@ export default function TeacherTools() {
     });
     const data = await response.json();
     if (!response.ok) {
-      setMessage(data.error);
+      setRosterMessage(data.error);
       return;
     }
     setPreview(null);
     await load();
-    setMessage(
+    setRosterMessage(
       zh
         ? `同步完成：${data.result.active} 个有效账号`
         : `Roster synced: ${data.result.active} active accounts`,
@@ -143,21 +147,35 @@ export default function TeacherTools() {
   async function uploadResource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
-    const response = await fetch("/api/teacher/resources", {
-      method: "POST",
-      body: new FormData(formElement),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      setMessage(data.error);
-      return;
+    setResourceMessage("");
+    setResourceUploading(true);
+    try {
+      const response = await fetch("/api/teacher/resources", {
+        method: "POST",
+        body: new FormData(formElement),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setResourceMessage(
+          data?.error || (zh ? "上传失败，请检查文件存储服务。" : "Upload failed. Please check the file storage service."),
+        );
+        return;
+      }
+      formElement.reset();
+      await load();
+      setResourceMessage(zh ? "资料上传成功。" : "Resource uploaded successfully.");
+    } catch {
+      setResourceMessage(
+        zh ? "上传失败，服务器暂时无法保存文件。" : "Upload failed because the server could not store the file.",
+      );
+    } finally {
+      setResourceUploading(false);
     }
-    formElement.reset();
-    await load();
   }
 
   return (
     <section className="teacher-tools">
+      {loadError && <div className="error-box teacher-tools-message">{loadError}</div>}
       <article className="tool-card">
         <h2>{zh ? "学生名单与账号" : "Roster and accounts"}</h2>
         <p>
@@ -171,7 +189,7 @@ export default function TeacherTools() {
             {zh ? "预览名单变更" : "Preview roster changes"}
           </button>
         </form>
-        {message && <div className="notice-box">{message}</div>}
+        {rosterMessage && <div className="notice-box">{rosterMessage}</div>}
         {preview && (
           <div className="sync-preview">
             <b>{zh ? "待确认变更" : "Changes awaiting confirmation"}</b>
@@ -333,8 +351,11 @@ export default function TeacherTools() {
             required
           />
           <small>{zh ? "单个文件最大 10 MB" : "Maximum file size: 10 MB"}</small>
-          <button className="primary-button">{zh ? "上传资料" : "Upload resource"}</button>
+          <button className="primary-button" disabled={resourceUploading}>
+            {resourceUploading ? (zh ? "正在上传…" : "Uploading…") : (zh ? "上传资料" : "Upload resource")}
+          </button>
         </form>
+        {resourceMessage && <div className="notice-box" aria-live="polite">{resourceMessage}</div>}
         {resources.map((item) => (
           <div className="resource-row" key={item.id}>
             <span>

@@ -16,6 +16,7 @@ async function json(path, init = {}) {
 }
 
 let quizId = null;
+let resourceId = null;
 let cookie = "";
 let studentCookie = "";
 let guestCookie = "";
@@ -114,10 +115,29 @@ try {
     "学生成绩册数据或访问控制不正确",
   );
 
+  const resourceForm = new FormData();
+  resourceForm.set("title", "自动化验收资料");
+  resourceForm.set(
+    "file",
+    new File(["# Smoke test resource\n"], "smoke-test.md", { type: "text/markdown" }),
+  );
+  const resourceUpload = await json("/api/teacher/resources", {
+    method: "POST",
+    headers: { cookie },
+    body: resourceForm,
+  });
+  assert(resourceUpload.response.status === 201, "课程资料上传失败");
+  resourceId = resourceUpload.data.item.id;
+  const resourceDownload = await fetch(`${base}/api/resources/${resourceId}/download`, { headers: { cookie } });
+  assert(resourceDownload.ok && (await resourceDownload.text()).includes("Smoke test resource"), "课程资料下载失败");
+
   const csv = await fetch(`${base}/api/teacher/quizzes/${quizId}/export`, { headers: { cookie } });
   assert(csv.ok && (await csv.text()).includes("20260001"), "CSV 导出失败");
-  console.log("✓ 注册学生与旁听生登录、自定义测验代码、创建发布、编辑、答题、判分、重复拦截、排行榜、成绩册、统计与 CSV 导出均通过");
+  console.log("✓ 学生登录、测验、排行榜、成绩册、课程资料上传下载、统计与 CSV 导出均通过");
 } finally {
+  if (resourceId && cookie) {
+    await fetch(`${base}/api/teacher/resources/${resourceId}`, { method: "DELETE", headers: { cookie } });
+  }
   if (quizId && cookie) {
     await fetch(`${base}/api/teacher/quizzes/${quizId}`, { method: "DELETE", headers: { cookie } });
   }

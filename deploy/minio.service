@@ -1,0 +1,23 @@
+[Unit]
+Description=MinIO object storage for ME2603
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=minio-user
+Group=minio-user
+EnvironmentFile=/etc/default/minio
+WorkingDirectory=/var/lib/minio
+ExecStart=/usr/local/bin/minio server --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 /var/lib/minio
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/minio
+
+[Install]
+WantedBy=multi-user.target
