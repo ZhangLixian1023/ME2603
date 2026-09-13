@@ -1,5 +1,10 @@
 const base = process.env.SMOKE_BASE_URL || "http://127.0.0.1:3000";
 
+if (!process.env.TEACHER_PASSWORD) {
+  console.error("Set TEACHER_PASSWORD env var to run smoke test (it must match the server's password).");
+  process.exit(1);
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -18,7 +23,7 @@ let guestCookie = "";
 try {
   const login = await json("/api/teacher/login", {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ password: process.env.TEACHER_PASSWORD || "teacher123" }),
+    body: JSON.stringify({ password: process.env.TEACHER_PASSWORD }),
   });
   assert(login.response.ok, "教师登录失败");
   cookie = login.response.headers.get("set-cookie")?.split(";")[0] || "";

@@ -7,7 +7,7 @@ const nextCli = resolve("node_modules", "next", "dist", "bin", "next");
 console.log("答答看本地预览模式");
 console.log(`学生端：http://localhost:${port}`);
 console.log(`教师端：http://localhost:${port}/teacher`);
-console.log("教师密码：teacher123（仅限本地预览）");
+console.log("教师密码：dev-only-do-not-deploy（仅限本地预览，正式部署必须改 .env）");
 console.log(`学生入口：http://localhost:${port}/student`);
 console.log("示例学生：20260001 / 202600012605（仅限本地预览）");
 console.log("预览数据只保存在内存中，停止服务后会自动清空。\n");
@@ -17,7 +17,7 @@ const child = spawn(process.execPath, [nextCli, "dev", "-p", port], {
   env: {
     ...process.env,
     PREVIEW_MODE: "true",
-    TEACHER_PASSWORD: process.env.TEACHER_PASSWORD || "teacher123",
+    TEACHER_PASSWORD: process.env.TEACHER_PASSWORD || "dev-only-do-not-deploy",
     SESSION_SECRET:
       process.env.SESSION_SECRET || "local-preview-session-secret-not-for-production",
   },

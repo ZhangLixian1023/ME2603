@@ -11,7 +11,7 @@ function bucket() { return process.env.MINIO_BUCKET || "quiz-files"; }
 function s3() {
   client ||= new S3Client({
     region: "us-east-1",
-    endpoint: process.env.MINIO_ENDPOINT || "http://minio:9000",
+    endpoint: process.env.MINIO_ENDPOINT || "http://127.0.0.1:9000",
     forcePathStyle: true,
     credentials: {
       accessKeyId: process.env.MINIO_ROOT_USER || "quizminio",
