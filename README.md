@@ -339,6 +339,16 @@ DATABASE_URL=postgresql://用户名:密码@数据库地址:5432/数据库名
 
 托管数据库应开启自动备份。GitHub 和应用都不会替你备份数据库。
 
+### 生产服务器 MinIO
+
+当前非 Docker 化的网站部署可以单独运行 MinIO 容器：
+
+```bash
+sudo /var/www/ME2603/deploy/setup-minio.sh /var/www/ME2603
+```
+
+脚本会安装 Docker（若尚未安装）、生成服务器本地随机凭据、备份并更新 `.env`，然后启动仅监听 `127.0.0.1:9000/9001` 的 `me2603-minio` 容器。课程资料仍由应用登录权限保护，不直接公开 MinIO 端口。Nginx 的请求上限为 12 MB，应用继续严格执行单文件 10 MB 限制。
+
 ## 常用检查命令
 
 | 命令 | 用途 |
@@ -348,6 +358,7 @@ DATABASE_URL=postgresql://用户名:密码@数据库地址:5432/数据库名
 | `ssh HKaliyun 'pm2 restart me2603'` | 重启 Next.js 应用 |
 | `ssh HKaliyun 'pm2 logs me2603-webhook'` | webhook 接收服务日志 |
 | `ssh HKaliyun 'tail -20 /var/log/me2603-webhook/audit.log'` | webhook 触发历史 |
+| `ssh HKaliyun 'docker ps --filter name=me2603-minio'` | 查看 MinIO 容器状态 |
 | `pnpm preview` | 不依赖数据库，3100 启动内存预览 |
 | `pnpm dev` | 热更新开发模式 |
 | `pnpm lint` | 检查代码规范 |
