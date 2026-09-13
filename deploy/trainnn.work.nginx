@@ -26,7 +26,8 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    client_max_body_size 1m;
+    # Multipart overhead sits above the app's strict 10 MB per-file limit.
+    client_max_body_size 12m;
 
     # GitHub webhook → local node service. server.mjs only trusts X-Real-IP
     # when the TCP peer is 127.0.0.1, so external spoofing is harmless.
