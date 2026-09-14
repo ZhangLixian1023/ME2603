@@ -222,7 +222,7 @@ export default function TeacherTools() {
             <p>
               {zh
                 ? "查看正式名单学生的每次测验成绩。— 表示尚未提交；停用账号仍保留历史成绩。"
-                : "View every registered student's quiz scores. — means not submitted; inactive accounts retain their history."}
+                : "View every enrolled student's quiz scores. — means not submitted; inactive accounts retain their history."}
             </p>
           </div>
           <button className="secondary-button" onClick={() => void load()} disabled={gradebookLoading}>

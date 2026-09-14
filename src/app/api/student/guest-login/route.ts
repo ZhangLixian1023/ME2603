@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
   const name = body?.name?.trim() || "";
   if (!/^[A-Za-z0-9_-]{2,30}$/.test(studentId)) return NextResponse.json({ error: "请输入有效学号（2–30 位字母、数字、- 或 _）" }, { status: 400 });
   if (name.length < 1 || name.length > 40) return NextResponse.json({ error: "请输入 1–40 个字符的姓名" }, { status: 400 });
-  if (await getStudent(studentId)) return NextResponse.json({ error: "该学号属于注册学生，请使用密码登录" }, { status: 409 });
+  if (await getStudent(studentId)) return NextResponse.json({ error: "该学号属于选课学生，请使用密码登录" }, { status: 409 });
 
   const student = { studentId, name, isGuest: true };
   const response = NextResponse.json({ student });

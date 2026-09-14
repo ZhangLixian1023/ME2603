@@ -43,7 +43,7 @@ try {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ studentId: "20260001", name: "冒用测试" }),
   });
-  assert(registeredIdGuestAttempt.response.status === 409, "注册学生学号可被旁听生入口绕过");
+  assert(registeredIdGuestAttempt.response.status === 409, "选课学生学号可被旁听生入口绕过");
 
   const guestId = `audit${Date.now().toString(36)}`;
   const guestLogin = await json("/api/student/guest-login", {
