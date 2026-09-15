@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import Brand from "./Brand";
 import BackHomeLink from "./BackHomeLink";
 import LanguageToggle from "./LanguageToggle";
+import MathText from "./MathText";
 import { localizeApiError, useLanguage } from "./LanguageProvider";
 
 type Quiz = { code: string; title: string; description: string; questions: Array<{ id: number; prompt: string; options: string[] }> };
@@ -77,7 +78,7 @@ export default function QuizClient({ code }: { code: string }) {
       <section className="result-list">{quiz.questions.map((question, index) => (
         <article className={result.correctness[index] ? "result-item correct" : "result-item wrong"} key={question.id}>
           <span>{result.correctness[index] ? "✓" : "×"}</span>
-          <div><small>{language === "zh" ? `${t("question")} ${index + 1} 题` : `${t("question")} ${index + 1}`}</small><p>{question.prompt}</p></div>
+          <div><small>{language === "zh" ? `${t("question")} ${index + 1} 题` : `${t("question")} ${index + 1}`}</small><p><MathText>{question.prompt}</MathText></p></div>
           <b>{result.correctness[index] ? t("correct") : t("incorrect")}</b>
         </article>
       ))}</section>
@@ -106,11 +107,11 @@ export default function QuizClient({ code }: { code: string }) {
       <header className="quiz-header"><div><span className="tiny-label">{t("answering")}</span><h1>{quiz.title}</h1></div><div className="header-actions"><BackHomeLink /><LanguageToggle /><div className="progress-copy"><strong>{answered}</strong> / {quiz.questions.length} {t("completed")}</div></div></header>
       <div className="progress-track"><i style={{ width: `${(answered / quiz.questions.length) * 100}%` }} /></div>
       <section className="questions-list">{quiz.questions.map((question, questionIndex) => (
-        <article className="question-card" key={question.id}><div className="question-number">{String(questionIndex + 1).padStart(2, "0")}</div><h2>{question.prompt}</h2>
+        <article className="question-card" key={question.id}><div className="question-number">{String(questionIndex + 1).padStart(2, "0")}</div><h2><MathText>{question.prompt}</MathText></h2>
           <div className="options-grid">{question.options.map((option, optionIndex) => (
             <label className={answers[questionIndex] === optionIndex ? "option selected" : "option"} key={optionIndex}>
               <input type="radio" name={`question-${question.id}`} checked={answers[questionIndex] === optionIndex} onChange={() => setAnswers((current) => current.map((value, index) => index === questionIndex ? optionIndex : value))} />
-              <span>{String.fromCharCode(65 + optionIndex)}</span>{option}
+              <span className="option-letter">{String.fromCharCode(65 + optionIndex)}</span><MathText>{option}</MathText>
             </label>
           ))}</div>
         </article>

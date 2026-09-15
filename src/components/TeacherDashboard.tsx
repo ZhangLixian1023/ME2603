@@ -5,6 +5,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import Brand from "./Brand";
 import BackHomeLink from "./BackHomeLink";
 import LanguageToggle from "./LanguageToggle";
+import MathText from "./MathText";
 import { localizeApiError, useLanguage } from "./LanguageProvider";
 import TeacherTools from "./TeacherTools";
 
@@ -168,7 +169,7 @@ export default function TeacherDashboard() {
           <section className="results-panel">
             <div className="modal-head"><div><span className="tiny-label">{t("teacherVisible")}</span><h2>{t("studentResults")}</h2></div><button onClick={() => setActiveResults(null)}>×</button></div>
             {statistics && <div className="analytics-summary"><article><span>{language==='zh'?'提交人数':'Submissions'}</span><strong>{statistics.submissionCount}</strong></article><article><span>{language==='zh'?'平均正确题数':'Average score'}</span><strong>{statistics.averageScore.toFixed(1)}</strong></article><article><span>{language==='zh'?'平均正确率':'Average accuracy'}</span><strong>{(statistics.averageAccuracy*100).toFixed(1)}%</strong></article></div>}
-            {statistics && statistics.questions.length>0 && <div className="question-stats">{statistics.questions.map((question,index)=><div key={question.questionId}><span>{index+1}. {question.prompt}</span><b>{(question.accuracy*100).toFixed(1)}% ({question.correctCount}/{question.responseCount})</b></div>)}</div>}
+            {statistics && statistics.questions.length>0 && <div className="question-stats">{statistics.questions.map((question,index)=><div key={question.questionId}><span>{index+1}. <MathText>{question.prompt}</MathText></span><b>{(question.accuracy*100).toFixed(1)}% ({question.correctCount}/{question.responseCount})</b></div>)}</div>}
             {busy ? <p className="empty-state">{t("loading")}</p> : results.length === 0 ? <div className="empty-state"><b>{t("noSubmissions")}</b><p>{t("noSubmissionsDetail")}</p></div> : (<div className="results-table"><div className="results-tr header"><span>{t("nickname")}</span><span>{t("studentId")}</span><span>{t("correctAnswers")}</span><span>{t("action")}</span></div>{results.map((item) => <div className="results-tr" key={item.id}><strong>{item.nickname}</strong><span>{item.studentId}</span><b>{item.score} / {item.total}</b><button onClick={() => resetSubmission(item.id)}>{t("allowRetry")}</button></div>)}</div>)}
           </section>
         )}
@@ -185,6 +186,7 @@ export default function TeacherDashboard() {
               <article className="question-editor" key={questionIndex}>
                 <div className="editor-title"><span>{language === "zh" ? `第 ${questionIndex + 1} 题` : `${t("question")} ${questionIndex + 1}`}</span>{questions.length > 1 && <button type="button" onClick={() => setQuestions((current) => current.filter((_, index) => index !== questionIndex))}>{t("remove")}</button>}</div>
                 <input className="prompt-input" value={question.prompt} onChange={(event) => updateQuestion(questionIndex, { prompt: event.target.value })} placeholder={t("questionPrompt")} />
+                <small className="latex-tip">{language === "zh" ? "支持 LaTeX：$...$ 为行内公式，$$...$$ 为独立公式（题目和选项均可使用）" : "LaTeX supported: $...$ for inline math and $$...$$ for display math (questions and options)."}</small>
                 <div className="option-edit-grid">{question.options.map((option, optionIndex) => (
                   <label className={question.correctIndex === optionIndex ? "edit-option answer" : "edit-option"} key={optionIndex}>
                     <input type="radio" name={`correct-${questionIndex}`} checked={question.correctIndex === optionIndex} onChange={() => updateQuestion(questionIndex, { correctIndex: optionIndex })} /><span>{String.fromCharCode(65 + optionIndex)}</span>

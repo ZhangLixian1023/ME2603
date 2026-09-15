@@ -71,12 +71,13 @@ try {
 
   const edited = await json(`/api/teacher/quizzes/${quizId}`, {
     method: "PUT", headers: { "content-type": "application/json", cookie },
-    body: JSON.stringify({ title: "自动化验收测验（已编辑）", description: "临时数据", questions: [{ prompt: "2 + 2 = ?", options: ["2", "3", "4", "5"], correctIndex: 2 }] }),
+    body: JSON.stringify({ title: "自动化验收测验（已编辑）", description: "临时数据", questions: [{ prompt: "计算 $2^2$，或验证：$$2+2=4$$", options: ["$2$", "$3$", "$4$", "$5$"], correctIndex: 2 }] }),
   });
   assert(edited.response.ok, "编辑测验失败");
 
   const publicQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: studentCookie } });
   assert(publicQuiz.response.ok && !JSON.stringify(publicQuiz.data).includes("correctIndex"), "学生接口泄露答案或读取失败");
+  assert(publicQuiz.data.quiz.questions[0].prompt.includes("$$2+2=4$$") && publicQuiz.data.quiz.questions[0].options[2] === "$4$", "LaTeX 题目或选项未被原样保存");
 
   const guestPublicQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: guestCookie } });
   assert(guestPublicQuiz.response.ok && !JSON.stringify(guestPublicQuiz.data).includes("correctIndex"), "旁听生无法读取测验或接口泄露答案");
