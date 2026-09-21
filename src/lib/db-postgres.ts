@@ -386,6 +386,9 @@ export async function submitQuiz(code: string, studentId: string, nickname: stri
       const correctness = questions.map(
         (question, index) => Number(question.correctIndex) === answers[index],
       );
+      const correctAnswers = questions.map((question, index) =>
+        correctness[index] ? null : Number(question.correctIndex),
+      );
       const score = correctness.filter(Boolean).length;
 
       const [row] = await tx`
@@ -403,6 +406,7 @@ export async function submitQuiz(code: string, studentId: string, nickname: stri
         score,
         total: questions.length,
         correctness,
+        correctAnswers,
       };
     });
   } catch (error) {

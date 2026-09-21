@@ -59,7 +59,7 @@ export default function Home() {
 
       <section className="feature-strip">
         <article><span>01</span><div><h3>{t("noStudentAccount")}</h3><p>{t("idNicknameToJoin")}</p></div></article>
-        <article><span>02</span><div><h3>{t("gradedAfterSubmit")}</h3><p>{t("noAnswersRevealed")}</p></div></article>
+        <article><span>02</span><div><h3>{t("gradedAfterSubmit")}</h3><p>{language === "zh" ? "提交后可查看错题及正确答案" : t("noAnswersRevealed")}</p></div></article>
         <article><span>03</span><div><h3>{t("liveLeaderboard")}</h3><p>{t("rankedByScore")}</p></div></article>
       </section>
       <footer className="site-footer"><span>{t("brand")} · Classroom Quiz</span><Link href="/privacy">{t("privacy")}</Link></footer>

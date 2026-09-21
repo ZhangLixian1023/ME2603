@@ -98,9 +98,9 @@ try {
 
   const submitted = await json(`/api/quizzes/${code}/submit`, {
     method: "POST", headers: { "content-type": "application/json", cookie: studentCookie },
-    body: JSON.stringify({ answers: [2] }),
+    body: JSON.stringify({ answers: [1] }),
   });
-  assert(submitted.response.ok && submitted.data.score === 1, "自动判分失败");
+  assert(submitted.response.ok && submitted.data.score === 0 && submitted.data.correctAnswers?.[0] === 2, "自动判分或错题答案返回失败");
 
   const duplicate = await json(`/api/quizzes/${code}/submit`, {
     method: "POST", headers: { "content-type": "application/json", cookie: studentCookie },
@@ -112,20 +112,20 @@ try {
     method: "POST", headers: { "content-type": "application/json", cookie: guestCookie },
     body: JSON.stringify({ answers: [2] }),
   });
-  assert(guestSubmission.response.ok && guestSubmission.data.score === 1, "旁听生提交或自动判分失败");
+  assert(guestSubmission.response.ok && guestSubmission.data.score === 1 && guestSubmission.data.correctAnswers?.[0] === null, "旁听生提交或自动判分失败");
 
   const board = await json(`/api/quizzes/${code}/leaderboard`);
   assert(board.response.ok && board.data.entries.some((entry) => entry.nickname === "Demo Student") && board.data.entries.some((entry) => entry.nickname === "Audit Student") && !JSON.stringify(board.data).includes("studentId"), "排行榜数据不正确");
 
   const results = await json(`/api/teacher/quizzes/${quizId}/results`, { headers: { cookie } });
-  assert(results.response.ok && results.data.submissions.some((item) => item.studentId === "20260001") && results.data.submissions.some((item) => item.studentId === guestId) && results.data.statistics?.averageAccuracy === 1, "教师成绩或统计读取失败");
+  assert(results.response.ok && results.data.submissions.some((item) => item.studentId === "20260001") && results.data.submissions.some((item) => item.studentId === guestId) && results.data.statistics?.averageAccuracy === 0.5, "教师成绩或统计读取失败");
 
   const gradebook = await json("/api/teacher/gradebook", { headers: { cookie } });
   const gradebookStudent = gradebook.data.students?.find((item) => item.studentId === "20260001");
   assert(
     gradebook.response.ok &&
       gradebook.data.quizzes?.some((quiz) => quiz.id === quizId) &&
-      gradebookStudent?.scores.some((score) => score.quizId === quizId && score.score === 1 && score.total === 1) &&
+      gradebookStudent?.scores.some((score) => score.quizId === quizId && score.score === 0 && score.total === 1) &&
       !gradebook.data.students?.some((item) => item.studentId === guestId),
     "学生成绩册数据或访问控制不正确",
   );
