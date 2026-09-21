@@ -66,7 +66,7 @@ try {
   const customCodeInput = `smoke${Date.now().toString(36)}`;
   const created = await json("/api/teacher/quizzes", {
     method: "POST", headers: { "content-type": "application/json", cookie },
-    body: JSON.stringify({ code: customCodeInput, title: "自动化验收测验", description: "临时数据", published: true, questions: [{ prompt: "", options: ["1", "2", "3", "4"], correctIndex: 1, imageKey: questionImageKey }] }),
+    body: JSON.stringify({ code: customCodeInput, title: "自动化验收测验 $E=mc^2$", description: "临时数据", published: true, questions: [{ prompt: "", options: ["1", "2", "3", "4"], correctIndex: 1, imageKey: questionImageKey }] }),
   });
   assert(created.response.status === 201, "创建并发布失败");
   quizId = created.data.quiz.id;
@@ -81,12 +81,13 @@ try {
 
   const edited = await json(`/api/teacher/quizzes/${quizId}`, {
     method: "PUT", headers: { "content-type": "application/json", cookie },
-    body: JSON.stringify({ title: "自动化验收测验（已编辑）", description: "临时数据", questions: [{ prompt: "计算 $2^2$，或验证：$$2+2=4$$", options: ["$2$", "$3$", "$4$", "$5$"], correctIndex: 2, imageKey: questionImageKey }] }),
+    body: JSON.stringify({ title: "自动化验收测验 $a^2$（已编辑）", description: "临时数据", questions: [{ prompt: "计算 $2^2$，或验证：$$2+2=4$$", options: ["$2$", "$3$", "$4$", "$5$"], correctIndex: 2, imageKey: questionImageKey }] }),
   });
   assert(edited.response.ok, "编辑测验失败");
 
   const publicQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: studentCookie } });
   assert(publicQuiz.response.ok && !JSON.stringify(publicQuiz.data).includes("correctIndex"), "学生接口泄露答案或读取失败");
+  assert(publicQuiz.data.quiz.title.includes("$a^2$"), "LaTeX 测验标题未被原样保存");
   assert(publicQuiz.data.quiz.questions[0].prompt.includes("$$2+2=4$$") && publicQuiz.data.quiz.questions[0].options[2] === "$4$", "LaTeX 题目或选项未被原样保存");
   assert(publicQuiz.data.quiz.questions[0].imageUrl && !JSON.stringify(publicQuiz.data).includes(questionImageKey), "题目图片地址缺失或泄露了对象存储键");
   const questionImage = await fetch(`${base}${publicQuiz.data.quiz.questions[0].imageUrl}`, { headers: { cookie: studentCookie } });

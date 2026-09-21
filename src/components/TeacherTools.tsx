@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useLanguage } from "./LanguageProvider";
+import MathText from "./MathText";
 
 type RosterPreview = {
   token: string;
@@ -263,7 +264,7 @@ export default function TeacherTools() {
                   <th>{zh ? "状态" : "Status"}</th>
                   {gradebook.quizzes.map((quiz) => (
                     <th key={quiz.id} title={quiz.title}>
-                      <b>{quiz.title}</b>
+                      <b><MathText>{quiz.title}</MathText></b>
                       <small>{quiz.code} · {quiz.total} {zh ? "题" : "questions"}</small>
                     </th>
                   ))}

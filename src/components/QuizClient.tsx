@@ -91,7 +91,7 @@ export default function QuizClient({ code }: { code: string }) {
     <main className="quiz-shell identity-shell">
       <header className="simple-header"><Brand /><div className="header-actions"><BackHomeLink /><LanguageToggle /><span className="code-pill">{t("code")} {quiz.code}</span></div></header>
       <section className="identity-card">
-        <span className="eyebrow"><i /> {t("readyToStart")}</span><h1>{quiz.title}</h1><p>{quiz.description}</p>
+        <span className="eyebrow"><i /> {t("readyToStart")}</span><h1><MathText>{quiz.title}</MathText></h1><p>{quiz.description}</p>
         <div className="quiz-meta"><span>{quiz.questions.length} {t("multipleChoiceQuestions")}</span><span>{t("oneSubmission")}</span></div>
         <form onSubmit={begin}>
           <p>{language === "zh" ? "请先使用学生学号和密码登录，姓名会自动从课程名单读取。" : "Sign in with your student ID and password. Your name will be read from the class roster."}</p>
@@ -105,7 +105,7 @@ export default function QuizClient({ code }: { code: string }) {
   const answered = answers.filter((answer) => answer >= 0).length;
   return (
     <main className="quiz-shell answering-shell">
-      <header className="quiz-header"><div><span className="tiny-label">{t("answering")}</span><h1>{quiz.title}</h1></div><div className="header-actions"><BackHomeLink /><LanguageToggle /><div className="progress-copy"><strong>{answered}</strong> / {quiz.questions.length} {t("completed")}</div></div></header>
+      <header className="quiz-header"><div><span className="tiny-label">{t("answering")}</span><h1><MathText>{quiz.title}</MathText></h1></div><div className="header-actions"><BackHomeLink /><LanguageToggle /><div className="progress-copy"><strong>{answered}</strong> / {quiz.questions.length} {t("completed")}</div></div></header>
       <div className="progress-track"><i style={{ width: `${(answered / quiz.questions.length) * 100}%` }} /></div>
       <section className="questions-list">{quiz.questions.map((question, questionIndex) => (
         <article className="question-card" key={question.id}><div className="question-number">{String(questionIndex + 1).padStart(2, "0")}</div>{question.prompt && <h2><MathText>{question.prompt}</MathText></h2>}

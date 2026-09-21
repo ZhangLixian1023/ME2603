@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import Brand from "./Brand";
 import BackHomeLink from "./BackHomeLink";
 import LanguageToggle from "./LanguageToggle";
+import MathText from "./MathText";
 import { localizeApiError, useLanguage } from "./LanguageProvider";
 
 type Entry = { nickname: string; score: number; total: number; submittedAt: string };
@@ -37,7 +38,7 @@ export default function LeaderboardClient({ code }: { code: string }) {
     <main className="leaderboard-shell">
       <header className="simple-header inverse"><Brand /><div className="header-actions"><BackHomeLink inverse /><LanguageToggle inverse /><Link href={`/quiz/${code}`}>{t("backToQuiz")}</Link></div></header>
       <section className="leaderboard-head">
-        <span className="eyebrow light"><i /> {t("liveUpdates")}</span><h1>{t("classLeaderboard")}</h1><p>{title || `${t("classCode")} ${code}`}</p>
+        <span className="eyebrow light"><i /> {t("liveUpdates")}</span><h1>{t("classLeaderboard")}</h1><p>{title ? <MathText>{title}</MathText> : `${t("classCode")} ${code}`}</p>
         <button className="refresh-button" onClick={load} disabled={refreshing}>{refreshing ? t("refreshing") : `↻ ${t("refreshRanking")}`}</button>
       </section>
       <section className="ranking-card">

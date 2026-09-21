@@ -220,7 +220,7 @@ export default function TeacherDashboard() {
           {quizzes.map((quiz) => (
             <article className="quiz-row" key={quiz.id}>
               <div className="quiz-icon">{quiz.title.slice(0, 1)}</div>
-              <div className="quiz-info"><h3>{quiz.title}</h3><p>{t("code")} <b>{quiz.code}</b> · {quiz.questionCount} {t("questionsShort")} · {quiz.submissionCount} {t("submittedShort")}</p></div>
+              <div className="quiz-info"><h3><MathText>{quiz.title}</MathText></h3><p>{t("code")} <b>{quiz.code}</b> · {quiz.questionCount} {t("questionsShort")} · {quiz.submissionCount} {t("submittedShort")}</p></div>
               <span className={quiz.isPublished ? "status published" : "status draft"}>{quiz.isPublished ? t("published") : t("draft")}</span>
               <div className="row-actions">
                 {quiz.isPublished && <><button onClick={() => copyLink(quiz.code)}>{t("copyLink")}</button><Link href={`/quiz/${quiz.code}/leaderboard`} target="_blank">{t("leaderboard")}</Link></>}
@@ -247,7 +247,8 @@ export default function TeacherDashboard() {
           <div className="modal-head"><div><span className="tiny-label">{editingId ? "EDIT QUIZ" : "NEW QUIZ"}</span><h2>{editingId ? t("editQuiz") : t("createQuiz")}</h2></div><button onClick={closeEditor}>×</button></div>
           <form onSubmit={saveQuiz}>
             {!editingId && <label className="custom-code-field">{t("customQuizCode")}<input value={quizCode} onChange={(event) => setQuizCode(event.target.value.replace(/\s/g, "").toUpperCase())} placeholder={t("customQuizCodePlaceholder")} minLength={3} maxLength={24} pattern="[A-Za-z0-9][A-Za-z0-9_-]{2,23}" autoComplete="off" spellCheck={false} /><small>{t("customQuizCodeHint")}</small></label>}
-            <div className="form-grid"><label>{t("quizTitle")}<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("quizTitlePlaceholder")} maxLength={80} autoFocus /></label><label>{t("shortDescription")}<input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("descriptionPlaceholder")} maxLength={240} /></label></div>
+            <div className="form-grid"><label>{t("quizTitle")}<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("quizTitlePlaceholder")} maxLength={80} autoFocus /><small>{language === "zh" ? "支持 LaTeX" : "LaTeX supported"}</small></label><label>{t("shortDescription")}<input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("descriptionPlaceholder")} maxLength={240} /></label></div>
+            {title && <div className="quiz-title-preview"><span>{language === "zh" ? "标题预览" : "Title preview"}</span><strong><MathText>{title}</MathText></strong></div>}
             <div className="question-editor-list">{questions.map((question, questionIndex) => (
               <article className="question-editor" key={questionIndex}>
                 <div className="editor-title"><span>{language === "zh" ? `第 ${questionIndex + 1} 题` : `${t("question")} ${questionIndex + 1}`}</span>{questions.length > 1 && <button type="button" onClick={() => removeQuestion(questionIndex)}>{t("remove")}</button>}</div>
@@ -264,6 +265,16 @@ export default function TeacherDashboard() {
                     <input value={option} onChange={(event) => updateOption(questionIndex, optionIndex, event.target.value)} placeholder={`${t("option")} ${String.fromCharCode(65 + optionIndex)}`} />
                   </label>
                 ))}</div><small className="answer-tip">{t("correctAnswerTip")}</small>
+                <details className="question-live-preview" open>
+                  <summary>{language === "zh" ? "实时预览（学生端效果）" : "Live preview (student view)"}</summary>
+                  <div className="question-preview-card">
+                    {question.prompt ? <h3><MathText>{question.prompt}</MathText></h3> : <h3 className="preview-placeholder">{language === "zh" ? "纯图片题，或在上方输入题目文字" : "Image-only question, or enter question text above"}</h3>}
+                    {question.imagePreview && <Image className="preview-question-image" src={question.imagePreview} alt={language === "zh" ? "题目图片" : "Question image"} width={900} height={520} unoptimized />}
+                    <div className="question-preview-options">{question.options.map((option, optionIndex) => (
+                      <div className={question.correctIndex === optionIndex ? "preview-option correct" : "preview-option"} key={optionIndex}><span>{String.fromCharCode(65 + optionIndex)}</span><div>{option ? <MathText>{option}</MathText> : <em>{language === "zh" ? `选项 ${String.fromCharCode(65 + optionIndex)}` : `Option ${String.fromCharCode(65 + optionIndex)}`}</em>}</div></div>
+                    ))}</div>
+                  </div>
+                </details>
               </article>
             ))}</div>
             {error && <div className="error-box">{error}</div>}
