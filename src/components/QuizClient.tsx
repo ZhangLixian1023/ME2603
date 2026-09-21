@@ -11,7 +11,7 @@ import MathText from "./MathText";
 import { localizeApiError, useLanguage } from "./LanguageProvider";
 
 type Quiz = { code: string; title: string; description: string; questions: Array<{ id: number; prompt: string; options: string[]; imageUrl: string | null }> };
-type Result = { score: number; total: number; correctness: boolean[]; correctAnswers: Array<number | null> };
+type Result = { score: number; total: number; correctness: boolean[] };
 
 export default function QuizClient({ code }: { code: string }) {
   const router = useRouter();
@@ -67,27 +67,23 @@ export default function QuizClient({ code }: { code: string }) {
   if (loading) return <CenteredMessage title={t("loadingQuiz")} detail={t("justAMoment")} />;
   if (!quiz) return <CenteredMessage title={t("unavailable")} detail={error || t("quizNotFound")} action />;
 
-  if (result) return (
+  if (result) {
+    const wrongQuestionNumbers = result.correctness.flatMap((correct, index) => correct ? [] : [index + 1]);
+    return (
     <main className="quiz-shell result-shell">
       <header className="simple-header"><Brand /><div className="header-actions"><BackHomeLink /><LanguageToggle /></div></header>
       <section className="result-hero">
         <span className="tiny-label">{t("submitted")}</span>
         <div className="result-score"><strong>{result.score}</strong><span>/ {result.total}</span></div>
         <h1>{result.score === result.total ? t("perfect") : result.score >= result.total * 0.6 ? t("goodJob") : t("keepTrying")}</h1>
-        <p>{language === "zh" ? "答错的题目会在下方显示正确答案。" : t("resultPrivacy")}</p>
+        <p>{language === "zh" ? "答错题号会标红，标准答案仍然保密。" : t("resultPrivacy")}</p>
+        <div className="result-question-map" aria-label={language === "zh" ? "每题答题结果" : "Result by question"}>{result.correctness.map((correct, index) => <span className={correct ? "correct" : "wrong"} title={correct ? t("correct") : t("incorrect")} aria-label={`${language === "zh" ? `第 ${index + 1} 题` : `Question ${index + 1}`}: ${correct ? t("correct") : t("incorrect")}`} key={index}>{index + 1}</span>)}</div>
+        {wrongQuestionNumbers.length > 0 && <div className="wrong-question-summary"><strong>{language === "zh" ? "答错题目：" : "Incorrect questions:"}</strong>{wrongQuestionNumbers.map((number) => <b key={number}>{language === "zh" ? `第 ${number} 题` : `Q${number}`}</b>)}</div>}
       </section>
-      <section className="result-list">{quiz.questions.map((question, index) => {
-        const correctIndex = result.correctAnswers[index];
-        const correctOption = correctIndex === null ? null : question.options[correctIndex];
-        return <article className={result.correctness[index] ? "result-item correct" : "result-item wrong"} key={question.id}>
-          <span>{result.correctness[index] ? "✓" : "×"}</span>
-          <div className="result-question-copy"><small>{language === "zh" ? `${t("question")} ${index + 1} 题` : `${t("question")} ${index + 1}`}</small>{question.prompt && <p><MathText>{question.prompt}</MathText></p>}{question.imageUrl && <Image className="result-question-image" src={question.imageUrl} alt={`${t("question")} ${index + 1}`} width={720} height={420} unoptimized />}{!result.correctness[index] && correctOption !== null && correctIndex !== null && <div className="correct-answer-reveal"><small>{language === "zh" ? "正确答案" : "Correct answer"}</small><strong><i>{String.fromCharCode(65 + correctIndex)}</i><MathText>{correctOption}</MathText></strong></div>}</div>
-          <b>{result.correctness[index] ? t("correct") : t("incorrect")}</b>
-        </article>;
-      })}</section>
       <div className="result-actions"><Link className="primary-button" href={`/quiz/${code}/leaderboard`}>{t("viewLeaderboard")}</Link><Link className="secondary-button" href="/">{t("backHome")}</Link></div>
     </main>
-  );
+    );
+  }
 
   if (!identityReady) return (
     <main className="quiz-shell identity-shell">

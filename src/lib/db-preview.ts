@@ -258,9 +258,6 @@ export async function submitQuiz(
   const correctness = quiz.questions.map(
     (question, index) => question.correctIndex === answers[index],
   );
-  const correctAnswers = quiz.questions.map((question, index) =>
-    correctness[index] ? null : question.correctIndex,
-  );
   const score = correctness.filter(Boolean).length;
   const submission: PreviewSubmission = {
     id: state.nextSubmissionId++,
@@ -280,7 +277,6 @@ export async function submitQuiz(
     score,
     total: submission.total,
     correctness: [...correctness],
-    correctAnswers,
   };
 }
 

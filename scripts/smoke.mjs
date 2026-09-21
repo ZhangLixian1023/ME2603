@@ -100,7 +100,7 @@ try {
     method: "POST", headers: { "content-type": "application/json", cookie: studentCookie },
     body: JSON.stringify({ answers: [1] }),
   });
-  assert(submitted.response.ok && submitted.data.score === 0 && submitted.data.correctAnswers?.[0] === 2, "自动判分或错题答案返回失败");
+  assert(submitted.response.ok && submitted.data.score === 0 && !("correctAnswers" in submitted.data), "自动判分失败或提交接口泄露了正确答案");
 
   const duplicate = await json(`/api/quizzes/${code}/submit`, {
     method: "POST", headers: { "content-type": "application/json", cookie: studentCookie },
@@ -112,7 +112,7 @@ try {
     method: "POST", headers: { "content-type": "application/json", cookie: guestCookie },
     body: JSON.stringify({ answers: [2] }),
   });
-  assert(guestSubmission.response.ok && guestSubmission.data.score === 1 && guestSubmission.data.correctAnswers?.[0] === null, "旁听生提交或自动判分失败");
+  assert(guestSubmission.response.ok && guestSubmission.data.score === 1 && !("correctAnswers" in guestSubmission.data), "旁听生提交失败或接口泄露了正确答案");
 
   const board = await json(`/api/quizzes/${code}/leaderboard`);
   assert(board.response.ok && board.data.entries.some((entry) => entry.nickname === "Demo Student") && board.data.entries.some((entry) => entry.nickname === "Audit Student") && !JSON.stringify(board.data).includes("studentId"), "排行榜数据不正确");
