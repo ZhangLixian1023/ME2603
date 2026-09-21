@@ -93,8 +93,11 @@ async function ensurePostgres() {
         prompt TEXT NOT NULL,
         options_json JSONB NOT NULL,
         correct_index INTEGER NOT NULL,
-        position INTEGER NOT NULL
+        position INTEGER NOT NULL,
+        image_key TEXT
       )`;
+
+    await sql`ALTER TABLE questions ADD COLUMN IF NOT EXISTS image_key TEXT`;
 
     await sql`
       CREATE TABLE IF NOT EXISTS submissions (
@@ -191,8 +194,8 @@ async function insertPostgresQuiz(sql: Sql, input: QuizInput, code = generateCod
     for (let index = 0; index < input.questions.length; index += 1) {
       const question = input.questions[index];
       await tx`
-        INSERT INTO questions (quiz_id, prompt, options_json, correct_index, position)
-        VALUES (${quiz.id}, ${question.prompt}, ${tx.json(question.options)}, ${question.correctIndex}, ${index})`;
+        INSERT INTO questions (quiz_id, prompt, options_json, correct_index, position, image_key)
+        VALUES (${quiz.id}, ${question.prompt}, ${tx.json(question.options)}, ${question.correctIndex}, ${index}, ${question.imageKey || null})`;
     }
 
     return { id: Number(quiz.id), code: String(quiz.code) };
@@ -260,7 +263,7 @@ export async function getTeacherQuiz(id: number) {
   if (!quiz) return null;
 
   const questions = await pg()`
-    SELECT id, prompt, options_json AS "optionsJson", correct_index AS "correctIndex"
+    SELECT id, prompt, options_json AS "optionsJson", correct_index AS "correctIndex", image_key AS "imageKey"
     FROM questions
     WHERE quiz_id = ${id}
     ORDER BY position`;
@@ -272,6 +275,7 @@ export async function getTeacherQuiz(id: number) {
       ...question,
       id: Number(question.id),
       options: normalizeOptions(question.optionsJson),
+      imageKey: question.imageKey ? String(question.imageKey) : null,
     })),
   };
 }
@@ -294,8 +298,8 @@ export async function updateQuiz(id: number, input: QuizInput) {
     for (let index = 0; index < input.questions.length; index += 1) {
       const question = input.questions[index];
       await tx`
-        INSERT INTO questions (quiz_id, prompt, options_json, correct_index, position)
-        VALUES (${id}, ${question.prompt}, ${tx.json(question.options)}, ${question.correctIndex}, ${index})`;
+        INSERT INTO questions (quiz_id, prompt, options_json, correct_index, position, image_key)
+        VALUES (${id}, ${question.prompt}, ${tx.json(question.options)}, ${question.correctIndex}, ${index}, ${question.imageKey || null})`;
     }
 
     return { id };
@@ -318,7 +322,7 @@ export async function getPublicQuiz(code: string): Promise<PublicQuiz | null> {
   if (!quiz) return null;
 
   const questions = await pg()`
-    SELECT id, prompt, options_json AS "optionsJson"
+    SELECT id, prompt, options_json AS "optionsJson", image_key AS "imageKey"
     FROM questions
     WHERE quiz_id = ${quiz.id}
     ORDER BY position`;
@@ -331,8 +335,21 @@ export async function getPublicQuiz(code: string): Promise<PublicQuiz | null> {
       id: Number(question.id),
       prompt: String(question.prompt),
       options: normalizeOptions(question.optionsJson),
+      imageUrl: question.imageKey ? `/api/quizzes/${encodeURIComponent(String(quiz.code))}/questions/${Number(question.id)}/image` : null,
     })),
   };
+}
+
+export async function getPublicQuestionImageKey(code: string, questionId: number) {
+  await ensurePostgres();
+  const [question] = await pg()`
+    SELECT qu.image_key AS "imageKey"
+    FROM questions qu
+    JOIN quizzes q ON q.id = qu.quiz_id
+    WHERE q.code = ${code.trim().toUpperCase()}
+      AND q.is_published = TRUE
+      AND qu.id = ${questionId}`;
+  return question?.imageKey ? String(question.imageKey) : null;
 }
 
 export async function setQuizPublished(id: number, published: boolean) {

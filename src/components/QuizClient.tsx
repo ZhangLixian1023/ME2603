@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Brand from "./Brand";
@@ -9,7 +10,7 @@ import LanguageToggle from "./LanguageToggle";
 import MathText from "./MathText";
 import { localizeApiError, useLanguage } from "./LanguageProvider";
 
-type Quiz = { code: string; title: string; description: string; questions: Array<{ id: number; prompt: string; options: string[] }> };
+type Quiz = { code: string; title: string; description: string; questions: Array<{ id: number; prompt: string; options: string[]; imageUrl: string | null }> };
 type Result = { score: number; total: number; correctness: boolean[] };
 
 export default function QuizClient({ code }: { code: string }) {
@@ -78,7 +79,7 @@ export default function QuizClient({ code }: { code: string }) {
       <section className="result-list">{quiz.questions.map((question, index) => (
         <article className={result.correctness[index] ? "result-item correct" : "result-item wrong"} key={question.id}>
           <span>{result.correctness[index] ? "✓" : "×"}</span>
-          <div><small>{language === "zh" ? `${t("question")} ${index + 1} 题` : `${t("question")} ${index + 1}`}</small><p><MathText>{question.prompt}</MathText></p></div>
+          <div><small>{language === "zh" ? `${t("question")} ${index + 1} 题` : `${t("question")} ${index + 1}`}</small>{question.prompt && <p><MathText>{question.prompt}</MathText></p>}{question.imageUrl && <Image className="result-question-image" src={question.imageUrl} alt={`${t("question")} ${index + 1}`} width={720} height={420} unoptimized />}</div>
           <b>{result.correctness[index] ? t("correct") : t("incorrect")}</b>
         </article>
       ))}</section>
@@ -107,7 +108,8 @@ export default function QuizClient({ code }: { code: string }) {
       <header className="quiz-header"><div><span className="tiny-label">{t("answering")}</span><h1>{quiz.title}</h1></div><div className="header-actions"><BackHomeLink /><LanguageToggle /><div className="progress-copy"><strong>{answered}</strong> / {quiz.questions.length} {t("completed")}</div></div></header>
       <div className="progress-track"><i style={{ width: `${(answered / quiz.questions.length) * 100}%` }} /></div>
       <section className="questions-list">{quiz.questions.map((question, questionIndex) => (
-        <article className="question-card" key={question.id}><div className="question-number">{String(questionIndex + 1).padStart(2, "0")}</div><h2><MathText>{question.prompt}</MathText></h2>
+        <article className="question-card" key={question.id}><div className="question-number">{String(questionIndex + 1).padStart(2, "0")}</div>{question.prompt && <h2><MathText>{question.prompt}</MathText></h2>}
+          {question.imageUrl && <Image className="question-image" src={question.imageUrl} alt={`${t("question")} ${questionIndex + 1}`} width={900} height={520} unoptimized />}
           <div className="options-grid">{question.options.map((option, optionIndex) => (
             <label className={answers[questionIndex] === optionIndex ? "option selected" : "option"} key={optionIndex}>
               <input type="radio" name={`question-${question.id}`} checked={answers[questionIndex] === optionIndex} onChange={() => setAnswers((current) => current.map((value, index) => index === questionIndex ? optionIndex : value))} />

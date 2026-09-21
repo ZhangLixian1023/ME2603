@@ -2,6 +2,7 @@ export type QuestionInput = {
   prompt: string;
   options: string[];
   correctIndex: number;
+  imageKey?: string | null;
 };
 
 export type QuizInput = {
@@ -16,7 +17,7 @@ export type PublicQuiz = {
   code: string;
   title: string;
   description: string;
-  questions: Array<{ id: number; prompt: string; options: string[] }>;
+  questions: Array<{ id: number; prompt: string; options: string[]; imageUrl: string | null }>;
 };
 
 export type QuizResults = {

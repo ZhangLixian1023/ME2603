@@ -17,6 +17,7 @@ async function json(path, init = {}) {
 
 let quizId = null;
 let resourceId = null;
+let questionImageKey = null;
 let cookie = "";
 let studentCookie = "";
 let guestCookie = "";
@@ -31,6 +32,15 @@ try {
   });
   assert(login.response.ok, "教师登录失败");
   cookie = login.response.headers.get("set-cookie")?.split(";")[0] || "";
+
+  const questionImageForm = new FormData();
+  questionImageForm.set(
+    "image",
+    new File([Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64")], "question.png", { type: "image/png" }),
+  );
+  const questionImageUpload = await json("/api/teacher/question-images", { method: "POST", headers: { cookie }, body: questionImageForm });
+  assert(questionImageUpload.response.status === 201 && questionImageUpload.data.imageKey, "题目图片上传失败");
+  questionImageKey = questionImageUpload.data.imageKey;
 
   const studentLogin = await json("/api/student/login", {
     method: "POST", headers: { "content-type": "application/json" },
@@ -56,7 +66,7 @@ try {
   const customCodeInput = `smoke${Date.now().toString(36)}`;
   const created = await json("/api/teacher/quizzes", {
     method: "POST", headers: { "content-type": "application/json", cookie },
-    body: JSON.stringify({ code: customCodeInput, title: "自动化验收测验", description: "临时数据", published: true, questions: [{ prompt: "1 + 1 = ?", options: ["1", "2", "3", "4"], correctIndex: 1 }] }),
+    body: JSON.stringify({ code: customCodeInput, title: "自动化验收测验", description: "临时数据", published: true, questions: [{ prompt: "", options: ["1", "2", "3", "4"], correctIndex: 1, imageKey: questionImageKey }] }),
   });
   assert(created.response.status === 201, "创建并发布失败");
   quizId = created.data.quiz.id;
@@ -71,13 +81,16 @@ try {
 
   const edited = await json(`/api/teacher/quizzes/${quizId}`, {
     method: "PUT", headers: { "content-type": "application/json", cookie },
-    body: JSON.stringify({ title: "自动化验收测验（已编辑）", description: "临时数据", questions: [{ prompt: "计算 $2^2$，或验证：$$2+2=4$$", options: ["$2$", "$3$", "$4$", "$5$"], correctIndex: 2 }] }),
+    body: JSON.stringify({ title: "自动化验收测验（已编辑）", description: "临时数据", questions: [{ prompt: "计算 $2^2$，或验证：$$2+2=4$$", options: ["$2$", "$3$", "$4$", "$5$"], correctIndex: 2, imageKey: questionImageKey }] }),
   });
   assert(edited.response.ok, "编辑测验失败");
 
   const publicQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: studentCookie } });
   assert(publicQuiz.response.ok && !JSON.stringify(publicQuiz.data).includes("correctIndex"), "学生接口泄露答案或读取失败");
   assert(publicQuiz.data.quiz.questions[0].prompt.includes("$$2+2=4$$") && publicQuiz.data.quiz.questions[0].options[2] === "$4$", "LaTeX 题目或选项未被原样保存");
+  assert(publicQuiz.data.quiz.questions[0].imageUrl && !JSON.stringify(publicQuiz.data).includes(questionImageKey), "题目图片地址缺失或泄露了对象存储键");
+  const questionImage = await fetch(`${base}${publicQuiz.data.quiz.questions[0].imageUrl}`, { headers: { cookie: studentCookie } });
+  assert(questionImage.ok && questionImage.headers.get("content-type") === "image/png" && (await questionImage.arrayBuffer()).byteLength > 0, "学生无法读取题目图片");
 
   const guestPublicQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: guestCookie } });
   assert(guestPublicQuiz.response.ok && !JSON.stringify(guestPublicQuiz.data).includes("correctIndex"), "旁听生无法读取测验或接口泄露答案");
@@ -134,12 +147,15 @@ try {
 
   const csv = await fetch(`${base}/api/teacher/quizzes/${quizId}/export`, { headers: { cookie } });
   assert(csv.ok && (await csv.text()).includes("20260001"), "CSV 导出失败");
-  console.log("✓ 学生登录、测验、排行榜、成绩册、课程资料上传下载、统计与 CSV 导出均通过");
+  console.log("✓ 学生登录、题目图片、测验、排行榜、成绩册、课程资料、统计与 CSV 导出均通过");
 } finally {
   if (resourceId && cookie) {
     await fetch(`${base}/api/teacher/resources/${resourceId}`, { method: "DELETE", headers: { cookie } });
   }
   if (quizId && cookie) {
     await fetch(`${base}/api/teacher/quizzes/${quizId}`, { method: "DELETE", headers: { cookie } });
+  }
+  if (questionImageKey && cookie) {
+    await fetch(`${base}/api/teacher/question-images`, { method: "DELETE", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ imageKey: questionImageKey }) });
   }
 }

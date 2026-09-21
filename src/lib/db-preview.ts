@@ -109,6 +109,7 @@ function copyQuestions(questions: QuestionInput[]) {
     prompt: question.prompt,
     options: [...question.options],
     correctIndex: question.correctIndex,
+    imageKey: question.imageKey || null,
   }));
 }
 
@@ -164,6 +165,7 @@ export async function getTeacherQuiz(id: number) {
       prompt: question.prompt,
       options: [...question.options],
       correctIndex: question.correctIndex,
+      imageKey: question.imageKey || null,
     })),
   };
 }
@@ -204,8 +206,17 @@ export async function getPublicQuiz(code: string): Promise<PublicQuiz | null> {
       id: question.id,
       prompt: question.prompt,
       options: [...question.options],
+      imageUrl: question.imageKey ? `/api/quizzes/${encodeURIComponent(quiz.code)}/questions/${question.id}/image` : null,
     })),
   };
+}
+
+export async function getPublicQuestionImageKey(code: string, questionId: number) {
+  const quiz = store().quizzes.find(
+    (candidate) => candidate.code === code.trim().toUpperCase() && candidate.isPublished,
+  );
+  const question = quiz?.questions.find((candidate) => candidate.id === questionId);
+  return question?.imageKey || null;
 }
 
 export async function setQuizPublished(id: number, published: boolean) {

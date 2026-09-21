@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isValidSession } from "@/lib/auth";
 import { createQuiz, listQuizzes, type QuestionInput } from "@/lib/db";
+import { deleteQuestionImages, isQuestionImageKey } from "@/lib/question-images";
 import { audit } from "@/lib/security";
 
 export const runtime = "nodejs";
@@ -29,16 +30,20 @@ export async function POST(request: NextRequest) {
   const valid = title.length >= 2 && title.length <= 80 && questions.length >= 1 && questions.length <= 50 &&
     questions.every((question) => {
       const options = question.options?.map((option) => option.trim()) || [];
-      return question.prompt?.trim().length > 0 && options.length >= 2 && options.length <= 6 &&
+      const validImage = question.imageKey == null || isQuestionImageKey(question.imageKey);
+      const hasPromptOrImage = Boolean(question.prompt?.trim()) || isQuestionImageKey(question.imageKey);
+      return hasPromptOrImage && options.length >= 2 && options.length <= 6 &&
         options.every(Boolean) && Number.isInteger(question.correctIndex) &&
-        question.correctIndex >= 0 && question.correctIndex < options.length;
+        question.correctIndex >= 0 && question.correctIndex < options.length &&
+        validImage;
     });
-  if (!valid) return NextResponse.json({ error: "请完整填写标题、题目、选项和正确答案" }, { status: 400 });
+  if (!valid) return NextResponse.json({ error: "请完整填写标题、题目文字或图片、选项和正确答案" }, { status: 400 });
 
   const normalizedQuestions = questions.map((question) => ({
-    prompt: question.prompt.trim(),
+    prompt: (question.prompt || "").trim(),
     options: question.options.map((option) => option.trim()),
     correctIndex: question.correctIndex,
+    imageKey: question.imageKey || null,
   }));
   let quiz;
   try {
@@ -50,6 +55,7 @@ export async function POST(request: NextRequest) {
       published: Boolean(body?.published),
     });
   } catch (error) {
+    await deleteQuestionImages(normalizedQuestions.map((question) => question.imageKey));
     if (error instanceof Error && error.message === "QUIZ_CODE_EXISTS") {
       return NextResponse.json({ error: "这个测验代码已经被使用，请换一个" }, { status: 409 });
     }

@@ -15,6 +15,7 @@ export const getTeacherQuiz = database.getTeacherQuiz;
 export const updateQuiz = database.updateQuiz;
 export const deleteQuiz = database.deleteQuiz;
 export const getPublicQuiz = database.getPublicQuiz;
+export const getPublicQuestionImageKey = database.getPublicQuestionImageKey;
 export const setQuizPublished = database.setQuizPublished;
 export const submitQuiz = database.submitQuiz;
 export const getLeaderboard = database.getLeaderboard;

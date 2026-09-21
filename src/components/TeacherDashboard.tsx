@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import Brand from "./Brand";
 import BackHomeLink from "./BackHomeLink";
@@ -10,11 +11,11 @@ import { localizeApiError, useLanguage } from "./LanguageProvider";
 import TeacherTools from "./TeacherTools";
 
 type QuizSummary = { id: number; code: string; title: string; description: string; isPublished: boolean; questionCount: number; submissionCount: number };
-type DraftQuestion = { prompt: string; options: string[]; correctIndex: number };
+type DraftQuestion = { prompt: string; options: string[]; correctIndex: number; imageKey: string | null; imageFile: File | null; imagePreview: string | null };
 type Submission = { id: number; studentId: string; nickname: string; score: number; total: number; submittedAt: string };
 type Statistics = { submissionCount:number; averageScore:number; averageAccuracy:number; questions:Array<{questionId:number;prompt:string;correctCount:number;responseCount:number;accuracy:number}> };
 
-const blankQuestion = (): DraftQuestion => ({ prompt: "", options: ["", "", "", ""], correctIndex: 0 });
+const blankQuestion = (): DraftQuestion => ({ prompt: "", options: ["", "", "", ""], correctIndex: 0, imageKey: null, imageFile: null, imagePreview: null });
 
 export default function TeacherDashboard() {
   const { language, t } = useLanguage();
@@ -56,7 +57,33 @@ export default function TeacherDashboard() {
   async function logout() { await fetch("/api/teacher/logout", { method: "POST" }); setAuth("out"); setQuizzes([]); }
   function updateQuestion(index: number, patch: Partial<DraftQuestion>) { setQuestions((current) => current.map((question, questionIndex) => questionIndex === index ? { ...question, ...patch } : question)); }
   function updateOption(questionIndex: number, optionIndex: number, value: string) { setQuestions((current) => current.map((question, index) => index === questionIndex ? { ...question, options: question.options.map((option, currentOption) => currentOption === optionIndex ? value : option) } : question)); }
-  function openCreate() { setEditingId(null); setQuizCode(""); setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setError(""); setCreating(true); }
+  function releasePreview(question: DraftQuestion) { if (question.imagePreview?.startsWith("blob:")) URL.revokeObjectURL(question.imagePreview); }
+  function closeEditor() { questions.forEach(releasePreview); setCreating(false); }
+  function openCreate() { questions.forEach(releasePreview); setEditingId(null); setQuizCode(""); setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setError(""); setCreating(true); }
+
+  function selectQuestionImage(index: number, file: File | undefined) {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024 || (!/^image\/(jpeg|png)$/.test(file.type) && !/\.(jpe?g|png)$/i.test(file.name))) {
+      setError(language === "zh" ? "题目图片须为 JPG、JPEG 或 PNG，且不能超过 5 MB。" : "Question images must be JPG, JPEG, or PNG and no larger than 5 MB.");
+      return;
+    }
+    const previous = questions[index];
+    if (previous) releasePreview(previous);
+    updateQuestion(index, { imageFile: file, imagePreview: URL.createObjectURL(file) });
+    setError("");
+  }
+
+  function removeQuestionImage(index: number) {
+    const question = questions[index];
+    if (question) releasePreview(question);
+    updateQuestion(index, { imageKey: null, imageFile: null, imagePreview: null });
+  }
+
+  function removeQuestion(index: number) {
+    const question = questions[index];
+    if (question) releasePreview(question);
+    setQuestions((current) => current.filter((_, questionIndex) => questionIndex !== index));
+  }
 
   async function openEdit(id: number) {
     setBusy(true); setError("");
@@ -64,7 +91,15 @@ export default function TeacherDashboard() {
     const data = await response.json(); setBusy(false);
     if (!response.ok) { setError(localizeApiError(data.error, language, "readQuizFailed")); return; }
     setEditingId(id); setQuizCode(""); setTitle(data.quiz.title); setDescription(data.quiz.description);
-    setQuestions(data.quiz.questions.map((question: DraftQuestion) => ({ prompt: question.prompt, options: question.options, correctIndex: question.correctIndex })));
+    questions.forEach(releasePreview);
+    setQuestions(data.quiz.questions.map((question: DraftQuestion) => ({
+      prompt: question.prompt,
+      options: question.options,
+      correctIndex: question.correctIndex,
+      imageKey: question.imageKey || null,
+      imageFile: null,
+      imagePreview: question.imageKey ? `/api/teacher/question-images?key=${encodeURIComponent(question.imageKey)}` : null,
+    })));
     setCreating(true);
   }
 
@@ -72,13 +107,44 @@ export default function TeacherDashboard() {
     event.preventDefault(); setBusy(true); setError(""); setNotice("");
     const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
     const published = submitter?.value === "publish";
-    const response = await fetch(editingId ? `/api/teacher/quizzes/${editingId}` : "/api/teacher/quizzes", { method: editingId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: editingId ? undefined : quizCode, title, description, questions, published }) });
-    const data = await response.json(); setBusy(false);
-    if (!response.ok) { setError(localizeApiError(data.error, language, "saveFailed")); return; }
-    setQuizCode(""); setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setCreating(false); setEditingId(null);
-    if (editingId) setNotice(t("quizUpdated"));
-    else setNotice(t("quizCreated").replace("{code}", data.quiz.code).replace("{status}", published ? t("studentsCanEnter") : t("publishToOpen")));
-    await loadQuizzes();
+    const uploadedKeys: string[] = [];
+    const wasEditing = editingId !== null;
+    try {
+      const preparedQuestions = [];
+      for (const question of questions) {
+        let imageKey = question.imageKey;
+        if (question.imageFile) {
+          const form = new FormData();
+          form.set("image", question.imageFile);
+          const uploadResponse = await fetch("/api/teacher/question-images", { method: "POST", body: form });
+          const uploadData = await uploadResponse.json();
+          if (!uploadResponse.ok) throw new Error(language === "zh" ? uploadData.error || "题目图片上传失败" : "Question image upload failed.");
+          const uploadedKey = String(uploadData.imageKey);
+          imageKey = uploadedKey;
+          uploadedKeys.push(uploadedKey);
+        }
+        preparedQuestions.push({ prompt: question.prompt, options: question.options, correctIndex: question.correctIndex, imageKey });
+      }
+
+      const response = await fetch(editingId ? `/api/teacher/quizzes/${editingId}` : "/api/teacher/quizzes", {
+        method: editingId ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: editingId ? undefined : quizCode, title, description, questions: preparedQuestions, published }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(localizeApiError(data.error, language, "saveFailed"));
+
+      questions.forEach(releasePreview);
+      setQuizCode(""); setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setCreating(false); setEditingId(null);
+      if (wasEditing) setNotice(t("quizUpdated"));
+      else setNotice(t("quizCreated").replace("{code}", data.quiz.code).replace("{status}", published ? t("studentsCanEnter") : t("publishToOpen")));
+      await loadQuizzes();
+    } catch (reason) {
+      await Promise.allSettled(uploadedKeys.map((imageKey) => fetch("/api/teacher/question-images", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageKey }) })));
+      setError(reason instanceof Error ? reason.message : t("saveFailed"));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function removeQuiz(quiz: QuizSummary) {
@@ -169,7 +235,7 @@ export default function TeacherDashboard() {
           <section className="results-panel">
             <div className="modal-head"><div><span className="tiny-label">{t("teacherVisible")}</span><h2>{t("studentResults")}</h2></div><button onClick={() => setActiveResults(null)}>×</button></div>
             {statistics && <div className="analytics-summary"><article><span>{language==='zh'?'提交人数':'Submissions'}</span><strong>{statistics.submissionCount}</strong></article><article><span>{language==='zh'?'平均正确题数':'Average score'}</span><strong>{statistics.averageScore.toFixed(1)}</strong></article><article><span>{language==='zh'?'平均正确率':'Average accuracy'}</span><strong>{(statistics.averageAccuracy*100).toFixed(1)}%</strong></article></div>}
-            {statistics && statistics.questions.length>0 && <div className="question-stats">{statistics.questions.map((question,index)=><div key={question.questionId}><span>{index+1}. <MathText>{question.prompt}</MathText></span><b>{(question.accuracy*100).toFixed(1)}% ({question.correctCount}/{question.responseCount})</b></div>)}</div>}
+            {statistics && statistics.questions.length>0 && <div className="question-stats">{statistics.questions.map((question,index)=><div key={question.questionId}><span>{index+1}. {question.prompt ? <MathText>{question.prompt}</MathText> : (language === "zh" ? "图片题" : "Image question")}</span><b>{(question.accuracy*100).toFixed(1)}% ({question.correctCount}/{question.responseCount})</b></div>)}</div>}
             {busy ? <p className="empty-state">{t("loading")}</p> : results.length === 0 ? <div className="empty-state"><b>{t("noSubmissions")}</b><p>{t("noSubmissionsDetail")}</p></div> : (<div className="results-table"><div className="results-tr header"><span>{t("nickname")}</span><span>{t("studentId")}</span><span>{t("correctAnswers")}</span><span>{t("action")}</span></div>{results.map((item) => <div className="results-tr" key={item.id}><strong>{item.nickname}</strong><span>{item.studentId}</span><b>{item.score} / {item.total}</b><button onClick={() => resetSubmission(item.id)}>{t("allowRetry")}</button></div>)}</div>)}
           </section>
         )}
@@ -178,15 +244,20 @@ export default function TeacherDashboard() {
 
       {creating && (
         <div className="modal-backdrop"><section className="create-modal">
-          <div className="modal-head"><div><span className="tiny-label">{editingId ? "EDIT QUIZ" : "NEW QUIZ"}</span><h2>{editingId ? t("editQuiz") : t("createQuiz")}</h2></div><button onClick={() => setCreating(false)}>×</button></div>
+          <div className="modal-head"><div><span className="tiny-label">{editingId ? "EDIT QUIZ" : "NEW QUIZ"}</span><h2>{editingId ? t("editQuiz") : t("createQuiz")}</h2></div><button onClick={closeEditor}>×</button></div>
           <form onSubmit={saveQuiz}>
             {!editingId && <label className="custom-code-field">{t("customQuizCode")}<input value={quizCode} onChange={(event) => setQuizCode(event.target.value.replace(/\s/g, "").toUpperCase())} placeholder={t("customQuizCodePlaceholder")} minLength={3} maxLength={24} pattern="[A-Za-z0-9][A-Za-z0-9_-]{2,23}" autoComplete="off" spellCheck={false} /><small>{t("customQuizCodeHint")}</small></label>}
             <div className="form-grid"><label>{t("quizTitle")}<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("quizTitlePlaceholder")} maxLength={80} autoFocus /></label><label>{t("shortDescription")}<input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("descriptionPlaceholder")} maxLength={240} /></label></div>
             <div className="question-editor-list">{questions.map((question, questionIndex) => (
               <article className="question-editor" key={questionIndex}>
-                <div className="editor-title"><span>{language === "zh" ? `第 ${questionIndex + 1} 题` : `${t("question")} ${questionIndex + 1}`}</span>{questions.length > 1 && <button type="button" onClick={() => setQuestions((current) => current.filter((_, index) => index !== questionIndex))}>{t("remove")}</button>}</div>
+                <div className="editor-title"><span>{language === "zh" ? `第 ${questionIndex + 1} 题` : `${t("question")} ${questionIndex + 1}`}</span>{questions.length > 1 && <button type="button" onClick={() => removeQuestion(questionIndex)}>{t("remove")}</button>}</div>
                 <input className="prompt-input" value={question.prompt} onChange={(event) => updateQuestion(questionIndex, { prompt: event.target.value })} placeholder={t("questionPrompt")} />
                 <small className="latex-tip">{language === "zh" ? "支持 LaTeX：$...$ 为行内公式，$$...$$ 为独立公式（题目和选项均可使用）" : "LaTeX supported: $...$ for inline math and $$...$$ for display math (questions and options)."}</small>
+                <div className="question-image-editor">
+                  {question.imagePreview && <div className="question-image-preview"><Image src={question.imagePreview} alt={language === "zh" ? "题目图片预览" : "Question image preview"} width={900} height={520} unoptimized /><button type="button" onClick={() => removeQuestionImage(questionIndex)}>{language === "zh" ? "移除图片" : "Remove image"}</button></div>}
+                  <label className="question-image-picker">{question.imagePreview ? (language === "zh" ? "更换题目图片" : "Replace question image") : (language === "zh" ? "＋ 添加题目图片" : "+ Add question image")}<input type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" onChange={(event) => { selectQuestionImage(questionIndex, event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
+                  <small>{language === "zh" ? "支持 JPG、JPEG、PNG，单张最大 5 MB。" : "JPG, JPEG, or PNG; maximum 5 MB per image."}</small>
+                </div>
                 <div className="option-edit-grid">{question.options.map((option, optionIndex) => (
                   <label className={question.correctIndex === optionIndex ? "edit-option answer" : "edit-option"} key={optionIndex}>
                     <input type="radio" name={`correct-${questionIndex}`} checked={question.correctIndex === optionIndex} onChange={() => updateQuestion(questionIndex, { correctIndex: optionIndex })} /><span>{String.fromCharCode(65 + optionIndex)}</span>
