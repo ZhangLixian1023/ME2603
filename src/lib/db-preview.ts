@@ -1,7 +1,8 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
+import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizAttemptState, QuizProgress, QuizSession, QuizSubmissionResult, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
+import { quizTimingRules, shouldExtendQuiz } from "./quiz-timing";
 
 type PreviewQuestion = QuestionInput & { id: number };
 type PreviewQuiz = {
@@ -23,13 +24,28 @@ type PreviewSubmission = {
   answers: number[];
   correctness: boolean[];
   submittedAt: string;
+  timedOut: boolean;
+};
+type PreviewAttempt = {
+  id: number;
+  quizId: number;
+  studentId: string;
+  nickname: string;
+  answers: number[];
+  startedAt: string;
+  expiresAt: string;
+  submittedAt: string | null;
+  timedOut: boolean;
+  extensionCount: number;
 };
 type PreviewStore = {
   quizzes: PreviewQuiz[];
   submissions: PreviewSubmission[];
+  attempts: PreviewAttempt[];
   nextQuizId: number;
   nextQuestionId: number;
   nextSubmissionId: number;
+  nextAttemptId: number;
   students: Array<{ studentId: string; name: string; active: boolean }>;
   rosterImports: Map<string, RosterStudent[]>;
   qa: Array<{ id: number; studentId: string; studentName: string; question: string; imageKey?: string | null; answer?: string | null; createdAt: string; answeredAt?: string | null }>;
@@ -73,9 +89,11 @@ function createStore(): PreviewStore {
       },
     ],
     submissions: [],
+    attempts: [],
     nextQuizId: 2,
     nextQuestionId: questions.length + 1,
     nextSubmissionId: 1,
+    nextAttemptId: 1,
     students: [{ studentId: "20260001", name: "Demo Student", active: true }],
     rosterImports: new Map(),
     qa: [],
@@ -174,7 +192,7 @@ export async function updateQuiz(id: number, input: QuizInput) {
   const state = store();
   const quiz = state.quizzes.find((candidate) => candidate.id === id);
   if (!quiz) throw new Error("QUIZ_NOT_FOUND");
-  if (state.submissions.some((submission) => submission.quizId === id)) {
+  if (state.attempts.some((attempt) => attempt.quizId === id)) {
     throw new Error("QUIZ_HAS_SUBMISSIONS");
   }
 
@@ -190,6 +208,7 @@ export async function deleteQuiz(id: number) {
   if (index < 0) return 0;
   state.quizzes.splice(index, 1);
   state.submissions = state.submissions.filter((submission) => submission.quizId !== id);
+  state.attempts = state.attempts.filter((attempt) => attempt.quizId !== id);
   return 1;
 }
 
@@ -226,6 +245,169 @@ export async function setQuizPublished(id: number, published: boolean) {
   return 1;
 }
 
+function findAttempt(quizId: number, studentId: string) {
+  return store().attempts.find(
+    (attempt) => attempt.quizId === quizId && attempt.studentId.toLowerCase() === studentId.toLowerCase(),
+  );
+}
+
+function submissionResult(submission: PreviewSubmission): QuizSubmissionResult {
+  return {
+    submissionId: submission.id,
+    score: submission.score,
+    total: submission.total,
+    correctness: [...submission.correctness],
+    timedOut: submission.timedOut,
+  };
+}
+
+function finalizePreviewAttempt(attempt: PreviewAttempt, quiz: PreviewQuiz, timedOut: boolean) {
+  const state = store();
+  const existing = state.submissions.find(
+    (submission) => submission.quizId === quiz.id && submission.studentId.toLowerCase() === attempt.studentId.toLowerCase(),
+  );
+  if (existing) {
+    attempt.submittedAt = existing.submittedAt;
+    attempt.timedOut = existing.timedOut;
+    return existing;
+  }
+
+  const answers = quiz.questions.map((_, index) => attempt.answers[index] ?? -1);
+  const correctness = quiz.questions.map((question, index) => question.correctIndex === answers[index]);
+  const submittedAt = timedOut ? attempt.expiresAt : new Date().toISOString();
+  const submission: PreviewSubmission = {
+    id: state.nextSubmissionId++,
+    quizId: quiz.id,
+    studentId: attempt.studentId,
+    nickname: attempt.nickname,
+    score: correctness.filter(Boolean).length,
+    total: quiz.questions.length,
+    answers,
+    correctness,
+    submittedAt,
+    timedOut,
+  };
+  state.submissions.push(submission);
+  attempt.submittedAt = submittedAt;
+  attempt.timedOut = timedOut;
+  return submission;
+}
+
+function refreshPreviewTiming(quiz: PreviewQuiz) {
+  const state = store();
+  const now = Date.now();
+  const attempts = state.attempts.filter((attempt) => attempt.quizId === quiz.id);
+  const initiallyUnsubmitted = attempts.filter((attempt) => !attempt.submittedAt).length;
+
+  if (shouldExtendQuiz(attempts.length, initiallyUnsubmitted)) {
+    for (const attempt of attempts) {
+      const remaining = Date.parse(attempt.expiresAt) - now;
+      if (!attempt.submittedAt && remaining > 0 && remaining <= quizTimingRules.extensionCheckSeconds * 1000) {
+        attempt.expiresAt = new Date(Date.parse(attempt.expiresAt) + quizTimingRules.extensionSeconds * 1000).toISOString();
+        attempt.extensionCount += 1;
+      }
+    }
+  }
+
+  for (const attempt of attempts) {
+    if (!attempt.submittedAt && Date.parse(attempt.expiresAt) <= now) {
+      finalizePreviewAttempt(attempt, quiz, true);
+    }
+  }
+}
+
+function previewProgress(quiz: PreviewQuiz): QuizProgress {
+  refreshPreviewTiming(quiz);
+  const attempts = store().attempts.filter((attempt) => attempt.quizId === quiz.id);
+  const unsubmittedCount = attempts.filter((attempt) => !attempt.submittedAt).length;
+  return {
+    startedCount: attempts.length,
+    unsubmittedCount,
+    submittedCount: attempts.length - unsubmittedCount,
+    timedOutCount: attempts.filter((attempt) => attempt.timedOut).length,
+    enabled: attempts.length >= quizTimingRules.minimumParticipants,
+    refreshedAt: new Date().toISOString(),
+  };
+}
+
+function previewAttemptState(quiz: PreviewQuiz, attempt: PreviewAttempt): QuizAttemptState {
+  const submission = store().submissions.find(
+    (item) => item.quizId === quiz.id && item.studentId.toLowerCase() === attempt.studentId.toLowerCase(),
+  );
+  return {
+    status: submission ? "submitted" : "active",
+    startedAt: attempt.startedAt,
+    expiresAt: attempt.expiresAt,
+    answers: [...attempt.answers],
+    extensionCount: attempt.extensionCount,
+    result: submission ? submissionResult(submission) : null,
+  };
+}
+
+export async function startQuizSession(code: string, studentId: string, nickname: string): Promise<QuizSession | null> {
+  const state = store();
+  const quiz = state.quizzes.find(
+    (candidate) => candidate.code === code.trim().toUpperCase() && candidate.isPublished,
+  );
+  if (!quiz) return null;
+
+  let attempt = findAttempt(quiz.id, studentId);
+  if (!attempt) {
+    const startedAt = new Date();
+    attempt = {
+      id: state.nextAttemptId++,
+      quizId: quiz.id,
+      studentId,
+      nickname,
+      answers: new Array(quiz.questions.length).fill(-1),
+      startedAt: startedAt.toISOString(),
+      expiresAt: new Date(startedAt.getTime() + quizTimingRules.durationSeconds * 1000).toISOString(),
+      submittedAt: null,
+      timedOut: false,
+      extensionCount: 0,
+    };
+    state.attempts.push(attempt);
+  }
+
+  const progress = previewProgress(quiz);
+  const publicQuiz = await getPublicQuiz(quiz.code);
+  if (!publicQuiz) return null;
+  return { quiz: publicQuiz, attempt: previewAttemptState(quiz, attempt), progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
+}
+
+export async function getQuizAttemptState(code: string, studentId: string) {
+  const quiz = store().quizzes.find(
+    (candidate) => candidate.code === code.trim().toUpperCase() && candidate.isPublished,
+  );
+  if (!quiz) return null;
+  const attempt = findAttempt(quiz.id, studentId);
+  if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
+  const progress = previewProgress(quiz);
+  return { attempt: previewAttemptState(quiz, attempt), progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
+}
+
+export async function saveQuizAnswer(code: string, studentId: string, questionIndex: number, answer: number) {
+  const quiz = store().quizzes.find(
+    (candidate) => candidate.code === code.trim().toUpperCase() && candidate.isPublished,
+  );
+  if (!quiz) throw new Error("QUIZ_NOT_FOUND");
+  const attempt = findAttempt(quiz.id, studentId);
+  if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
+  refreshPreviewTiming(quiz);
+  if (attempt.submittedAt) return previewAttemptState(quiz, attempt);
+  const question = quiz.questions[questionIndex];
+  if (!question || !Number.isInteger(answer) || answer < 0 || answer >= question.options.length) throw new Error("INVALID_ANSWER");
+  attempt.answers[questionIndex] = answer;
+  return previewAttemptState(quiz, attempt);
+}
+
+export async function getQuizProgress(codeOrId: string | number) {
+  const quiz = typeof codeOrId === "number"
+    ? store().quizzes.find((candidate) => candidate.id === codeOrId)
+    : store().quizzes.find((candidate) => candidate.code === codeOrId.trim().toUpperCase() && candidate.isPublished);
+  return quiz ? previewProgress(quiz) : null;
+}
+
 export async function submitQuiz(
   code: string,
   studentId: string,
@@ -238,6 +420,8 @@ export async function submitQuiz(
   );
   if (!quiz) throw new Error("QUIZ_NOT_FOUND");
 
+  refreshPreviewTiming(quiz);
+
   if (
     state.submissions.some(
       (submission) =>
@@ -248,9 +432,12 @@ export async function submitQuiz(
     throw new Error("ALREADY_SUBMITTED");
   }
 
+  const attempt = findAttempt(quiz.id, studentId);
+  if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
+
   if (
     answers.length !== quiz.questions.length ||
-    answers.some((answer) => !Number.isInteger(answer))
+    answers.some((answer, index) => !Number.isInteger(answer) || answer < 0 || answer >= quiz.questions[index].options.length)
   ) {
     throw new Error("INVALID_ANSWERS");
   }
@@ -269,14 +456,19 @@ export async function submitQuiz(
     answers: [...answers],
     correctness,
     submittedAt: new Date().toISOString(),
+    timedOut: false,
   };
   state.submissions.push(submission);
+  attempt.answers = [...answers];
+  attempt.submittedAt = submission.submittedAt;
+  attempt.timedOut = false;
 
   return {
     submissionId: submission.id,
     score,
     total: submission.total,
     correctness: [...correctness],
+    timedOut: false,
   };
 }
 
@@ -347,7 +539,10 @@ export async function deleteSubmission(id: number) {
   const state = store();
   const index = state.submissions.findIndex((submission) => submission.id === id);
   if (index < 0) return 0;
-  state.submissions.splice(index, 1);
+  const [submission] = state.submissions.splice(index, 1);
+  state.attempts = state.attempts.filter(
+    (attempt) => !(attempt.quizId === submission.quizId && attempt.studentId.toLowerCase() === submission.studentId.toLowerCase()),
+  );
   return 1;
 }
 

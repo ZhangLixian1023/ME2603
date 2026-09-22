@@ -20,6 +20,49 @@ export type PublicQuiz = {
   questions: Array<{ id: number; prompt: string; options: string[]; imageUrl: string | null }>;
 };
 
+export type QuizSubmissionResult = {
+  submissionId: number;
+  score: number;
+  total: number;
+  correctness: boolean[];
+  timedOut: boolean;
+};
+
+export type QuizProgress = {
+  startedCount: number;
+  unsubmittedCount: number;
+  submittedCount: number;
+  timedOutCount: number;
+  enabled: boolean;
+  refreshedAt: string;
+};
+
+export type QuizAttemptState = {
+  status: "active" | "submitted";
+  startedAt: string;
+  expiresAt: string;
+  answers: number[];
+  extensionCount: number;
+  result: QuizSubmissionResult | null;
+};
+
+export type QuizTimingRules = {
+  durationSeconds: number;
+  extensionSeconds: number;
+  extensionCheckSeconds: number;
+  extensionThreshold: number;
+  minimumParticipants: number;
+  progressRefreshSeconds: number;
+};
+
+export type QuizSession = {
+  quiz: PublicQuiz;
+  attempt: QuizAttemptState;
+  progress: QuizProgress;
+  rules: QuizTimingRules;
+  serverNow: string;
+};
+
 export type QuizResults = {
   quiz: { id: number; code: string; title: string };
   statistics: {

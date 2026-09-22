@@ -14,6 +14,7 @@ type QuizSummary = { id: number; code: string; title: string; description: strin
 type DraftQuestion = { prompt: string; options: string[]; correctIndex: number; imageKey: string | null; imageFile: File | null; imagePreview: string | null };
 type Submission = { id: number; studentId: string; nickname: string; score: number; total: number; submittedAt: string };
 type Statistics = { submissionCount:number; averageScore:number; averageAccuracy:number; questions:Array<{questionId:number;prompt:string;correctCount:number;responseCount:number;accuracy:number}> };
+type QuizProgress = { startedCount:number; unsubmittedCount:number; submittedCount:number; timedOutCount:number; enabled:boolean; refreshedAt:string };
 
 const blankQuestion = (): DraftQuestion => ({ prompt: "", options: ["", "", "", ""], correctIndex: 0, imageKey: null, imageFile: null, imagePreview: null });
 
@@ -31,6 +32,7 @@ export default function TeacherDashboard() {
   const [activeResults, setActiveResults] = useState<number | null>(null);
   const [results, setResults] = useState<Submission[]>([]);
   const [statistics, setStatistics] = useState<Statistics | null>(null);
+  const [quizProgress, setQuizProgress] = useState<QuizProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -45,6 +47,20 @@ export default function TeacherDashboard() {
     const initial = window.setTimeout(() => { loadQuizzes().catch(() => setAuth("out")); }, 0);
     return () => window.clearTimeout(initial);
   }, [loadQuizzes]);
+
+  const loadQuizProgress = useCallback(async (id: number) => {
+    const response = await fetch(`/api/teacher/quizzes/${id}/progress`, { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    setQuizProgress(data.progress || null);
+  }, []);
+
+  useEffect(() => {
+    if (activeResults === null) return;
+    const initial = window.setTimeout(() => void loadQuizProgress(activeResults), 0);
+    const interval = window.setInterval(() => void loadQuizProgress(activeResults), 30_000);
+    return () => { window.clearTimeout(initial); window.clearInterval(interval); };
+  }, [activeResults, loadQuizProgress]);
 
   async function login(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
@@ -163,7 +179,7 @@ export default function TeacherDashboard() {
   }
 
   async function showResults(id: number) {
-    setActiveResults(id); setBusy(true);
+    setActiveResults(id); setQuizProgress(null); setBusy(true);
     const response = await fetch(`/api/teacher/quizzes/${id}/results`, { cache: "no-store" });
     const data = await response.json(); setBusy(false);
     if (!response.ok) { setError(localizeApiError(data.error, language, "readResultsFailed")); return; }
@@ -233,7 +249,8 @@ export default function TeacherDashboard() {
         </section>
         {activeResults !== null && (
           <section className="results-panel">
-            <div className="modal-head"><div><span className="tiny-label">{t("teacherVisible")}</span><h2>{t("studentResults")}</h2></div><button onClick={() => setActiveResults(null)}>×</button></div>
+            <div className="modal-head"><div><span className="tiny-label">{t("teacherVisible")}</span><h2>{t("studentResults")}</h2></div><button onClick={() => { setActiveResults(null); setQuizProgress(null); }}>×</button></div>
+            {quizProgress && <div className="live-progress-summary"><div><span>{language === "zh" ? "未提交 / 已开始" : "Not submitted / Started"}</span><strong>{quizProgress.unsubmittedCount} / {quizProgress.startedCount}</strong></div><div><span>{language === "zh" ? "已提交" : "Submitted"}</span><strong>{quizProgress.submittedCount}</strong></div><div><span>{language === "zh" ? "其中超时提交" : "Auto-submitted"}</span><strong>{quizProgress.timedOutCount}</strong></div><small>{language === "zh" ? "每 30 秒刷新；满 5 人后启用 40% 自动延时规则" : "Updates every 30 seconds; the 40% extension rule activates after 5 students start"}</small></div>}
             {statistics && <div className="analytics-summary"><article><span>{language==='zh'?'提交人数':'Submissions'}</span><strong>{statistics.submissionCount}</strong></article><article><span>{language==='zh'?'平均正确题数':'Average score'}</span><strong>{statistics.averageScore.toFixed(1)}</strong></article><article><span>{language==='zh'?'平均正确率':'Average accuracy'}</span><strong>{(statistics.averageAccuracy*100).toFixed(1)}%</strong></article></div>}
             {statistics && statistics.questions.length>0 && <div className="question-stats">{statistics.questions.map((question,index)=><div key={question.questionId}><span>{index+1}. {question.prompt ? <MathText>{question.prompt}</MathText> : (language === "zh" ? "图片题" : "Image question")}</span><b>{(question.accuracy*100).toFixed(1)}% ({question.correctCount}/{question.responseCount})</b></div>)}</div>}
             {busy ? <p className="empty-state">{t("loading")}</p> : results.length === 0 ? <div className="empty-state"><b>{t("noSubmissions")}</b><p>{t("noSubmissionsDetail")}</p></div> : (<div className="results-table"><div className="results-tr header"><span>{t("nickname")}</span><span>{t("studentId")}</span><span>{t("correctAnswers")}</span><span>{t("action")}</span></div>{results.map((item) => <div className="results-tr" key={item.id}><strong>{item.nickname}</strong><span>{item.studentId}</span><b>{item.score} / {item.total}</b><button onClick={() => resetSubmission(item.id)}>{t("allowRetry")}</button></div>)}</div>)}

@@ -87,6 +87,11 @@ try {
 
   const publicQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: studentCookie } });
   assert(publicQuiz.response.ok && !JSON.stringify(publicQuiz.data).includes("correctIndex"), "学生接口泄露答案或读取失败");
+  assert(publicQuiz.data.attempt?.status === "active" && publicQuiz.data.attempt.answers?.[0] === -1, "进入测验后未自动建立答题计时记录");
+  assert(publicQuiz.data.rules?.durationSeconds === 600 && publicQuiz.data.rules?.progressRefreshSeconds === 30, "十分钟计时或 30 秒刷新规则不正确");
+  const initialStartedAt = publicQuiz.data.attempt.startedAt;
+  const initialDuration = Date.parse(publicQuiz.data.attempt.expiresAt) - Date.parse(initialStartedAt);
+  assert(initialDuration === 10 * 60 * 1000, "首次进入没有获得准确的十分钟答题时间");
   assert(publicQuiz.data.quiz.title.includes("$a^2$"), "LaTeX 测验标题未被原样保存");
   assert(publicQuiz.data.quiz.questions[0].prompt.includes("$$2+2=4$$") && publicQuiz.data.quiz.questions[0].options[2] === "$4$", "LaTeX 题目或选项未被原样保存");
   assert(publicQuiz.data.quiz.questions[0].imageUrl && !JSON.stringify(publicQuiz.data).includes(questionImageKey), "题目图片地址缺失或泄露了对象存储键");
@@ -96,11 +101,23 @@ try {
   const guestPublicQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: guestCookie } });
   assert(guestPublicQuiz.response.ok && !JSON.stringify(guestPublicQuiz.data).includes("correctIndex"), "旁听生无法读取测验或接口泄露答案");
 
+  const resumedQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: studentCookie } });
+  assert(resumedQuiz.data.attempt?.startedAt === initialStartedAt, "刷新页面错误地重置了答题倒计时");
+
+  const savedAnswer = await json(`/api/quizzes/${code}/attempt`, {
+    method: "PATCH", headers: { "content-type": "application/json", cookie: studentCookie },
+    body: JSON.stringify({ questionIndex: 0, answer: 1 }),
+  });
+  assert(savedAnswer.response.ok && savedAnswer.data.attempt?.answers?.[0] === 1, "答案自动保存失败");
+
+  const liveProgress = await json(`/api/teacher/quizzes/${quizId}/progress`, { headers: { cookie } });
+  assert(liveProgress.response.ok && liveProgress.data.progress?.startedCount === 2 && liveProgress.data.progress?.unsubmittedCount === 2, "实时未提交人数 / 已开始人数统计不正确");
+
   const submitted = await json(`/api/quizzes/${code}/submit`, {
     method: "POST", headers: { "content-type": "application/json", cookie: studentCookie },
     body: JSON.stringify({ answers: [1] }),
   });
-  assert(submitted.response.ok && submitted.data.score === 0 && !("correctAnswers" in submitted.data), "自动判分失败或提交接口泄露了正确答案");
+  assert(submitted.response.ok && submitted.data.score === 0 && submitted.data.timedOut === false && !("correctAnswers" in submitted.data), "自动判分失败或提交接口泄露了正确答案");
 
   const duplicate = await json(`/api/quizzes/${code}/submit`, {
     method: "POST", headers: { "content-type": "application/json", cookie: studentCookie },
@@ -113,6 +130,9 @@ try {
     body: JSON.stringify({ answers: [2] }),
   });
   assert(guestSubmission.response.ok && guestSubmission.data.score === 1 && !("correctAnswers" in guestSubmission.data), "旁听生提交失败或接口泄露了正确答案");
+
+  const completedProgress = await json(`/api/teacher/quizzes/${quizId}/progress`, { headers: { cookie } });
+  assert(completedProgress.response.ok && completedProgress.data.progress?.startedCount === 2 && completedProgress.data.progress?.unsubmittedCount === 0 && completedProgress.data.progress?.submittedCount === 2, "提交后的实时人数统计不正确");
 
   const board = await json(`/api/quizzes/${code}/leaderboard`);
   assert(board.response.ok && board.data.entries.some((entry) => entry.nickname === "Demo Student") && board.data.entries.some((entry) => entry.nickname === "Audit Student") && !JSON.stringify(board.data).includes("studentId"), "排行榜数据不正确");
@@ -148,7 +168,7 @@ try {
 
   const csv = await fetch(`${base}/api/teacher/quizzes/${quizId}/export`, { headers: { cookie } });
   assert(csv.ok && (await csv.text()).includes("20260001"), "CSV 导出失败");
-  console.log("✓ 学生登录、题目图片、测验、排行榜、成绩册、课程资料、统计与 CSV 导出均通过");
+  console.log("✓ 登录、十分钟计时、答案自动保存、实时人数、测验、排行榜、成绩册、资料与 CSV 均通过");
 } finally {
   if (resourceId && cookie) {
     await fetch(`${base}/api/teacher/resources/${resourceId}`, { method: "DELETE", headers: { cookie } });

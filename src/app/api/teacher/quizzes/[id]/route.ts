@@ -45,7 +45,7 @@ export async function PUT(request: NextRequest, context: RouteContext<"/api/teac
   } catch (error) {
     const existingKeys = new Set(oldImageKeys.filter(Boolean));
     await deleteQuestionImages(normalizedQuestions.map((question) => question.imageKey).filter((key) => key && !existingKeys.has(key)));
-    if (error instanceof Error && error.message === "QUIZ_HAS_SUBMISSIONS") return NextResponse.json({ error:"已有学生提交，不能再修改题目。可新建一份测验。" }, { status:409 });
+    if (error instanceof Error && error.message === "QUIZ_HAS_SUBMISSIONS") return NextResponse.json({ error:"已有学生开始答题，不能再修改题目。可新建一份测验。" }, { status:409 });
     if (error instanceof Error && error.message === "QUIZ_NOT_FOUND") return NextResponse.json({ error:"测验不存在" }, { status:404 });
     throw error;
   }

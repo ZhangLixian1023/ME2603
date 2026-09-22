@@ -3,7 +3,8 @@ import "server-only";
 import postgres, { type Sql } from "postgres";
 import { randomUUID } from "node:crypto";
 import { hashPassword, verifyPassword } from "./auth";
-import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
+import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizAttemptState, QuizProgress, QuizSession, QuizSubmissionResult, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
+import { quizTimingRules, shouldExtendQuiz } from "./quiz-timing";
 
 const retentionDays = Math.max(1, Number(process.env.DATA_RETENTION_DAYS) || 365);
 const codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -109,7 +110,24 @@ async function ensurePostgres() {
         total INTEGER NOT NULL,
         answers_json JSONB NOT NULL,
         correctness_json JSONB NOT NULL,
+        timed_out BOOLEAN NOT NULL DEFAULT FALSE,
         submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`;
+
+    await sql`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS timed_out BOOLEAN NOT NULL DEFAULT FALSE`;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS quiz_attempts (
+        id BIGSERIAL PRIMARY KEY,
+        quiz_id BIGINT NOT NULL REFERENCES quizzes(id) ON DELETE CASCADE,
+        student_id TEXT NOT NULL,
+        nickname TEXT NOT NULL,
+        answers_json JSONB NOT NULL,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL,
+        submitted_at TIMESTAMPTZ,
+        timed_out BOOLEAN NOT NULL DEFAULT FALSE,
+        extension_count INTEGER NOT NULL DEFAULT 0
       )`;
 
     await sql`
@@ -155,8 +173,19 @@ async function ensurePostgres() {
     await sql`CREATE INDEX IF NOT EXISTS questions_quiz_position_idx ON questions (quiz_id, position)`;
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS submissions_quiz_student_unique ON submissions (quiz_id, lower(student_id))`;
     await sql`CREATE INDEX IF NOT EXISTS submissions_leaderboard_idx ON submissions (quiz_id, score DESC, submitted_at ASC)`;
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS quiz_attempts_quiz_student_unique ON quiz_attempts (quiz_id, lower(student_id))`;
+    await sql`CREATE INDEX IF NOT EXISTS quiz_attempts_progress_idx ON quiz_attempts (quiz_id, submitted_at, expires_at)`;
     await sql`CREATE INDEX IF NOT EXISTS qa_posts_created_idx ON qa_posts (created_at DESC)`;
+    await sql`
+      INSERT INTO quiz_attempts (
+        quiz_id, student_id, nickname, answers_json, started_at, expires_at, submitted_at, timed_out
+      )
+      SELECT
+        quiz_id, student_id, nickname, answers_json, submitted_at, submitted_at, submitted_at, timed_out
+      FROM submissions
+      ON CONFLICT DO NOTHING`;
     await sql`DELETE FROM submissions WHERE submitted_at < NOW() - (${retentionDays} * INTERVAL '1 day')`;
+    await sql`DELETE FROM quiz_attempts WHERE COALESCE(submitted_at, expires_at) < NOW() - (${retentionDays} * INTERVAL '1 day')`;
     await sql`DELETE FROM roster_imports WHERE created_at < NOW() - INTERVAL '1 hour'`;
 
     const [{ count }] = await sql`SELECT COUNT(*)::int AS count FROM quizzes`;
@@ -284,7 +313,7 @@ export async function updateQuiz(id: number, input: QuizInput) {
   await ensurePostgres();
 
   return pg().begin(async (tx) => {
-    const [{ count }] = await tx`SELECT COUNT(*)::int AS count FROM submissions WHERE quiz_id = ${id}`;
+    const [{ count }] = await tx`SELECT COUNT(*)::int AS count FROM quiz_attempts WHERE quiz_id = ${id}`;
     if (Number(count) > 0) throw new Error("QUIZ_HAS_SUBMISSIONS");
 
     const changed = await tx`
@@ -362,8 +391,236 @@ export async function setQuizPublished(id: number, published: boolean) {
   return rows.length;
 }
 
+function normalizeBooleanArray(value: unknown): boolean[] {
+  if (Array.isArray(value)) return value.map(Boolean);
+  return JSON.parse(String(value)) as boolean[];
+}
+
+function normalizeAttemptAnswers(value: unknown, total: number): number[] {
+  const parsed = Array.isArray(value) ? value.map(Number) : JSON.parse(String(value)).map(Number);
+  return Array.from({ length: total }, (_, index) => Number.isInteger(parsed[index]) ? parsed[index] : -1);
+}
+
+function isoDate(value: unknown) {
+  return new Date(value as string | number | Date).toISOString();
+}
+
+async function settleQuizTiming(quizId: number): Promise<QuizProgress> {
+  return pg().begin(async (tx) => {
+    const [before] = await tx`
+      SELECT
+        COUNT(*)::int AS "startedCount",
+        COUNT(*) FILTER (WHERE submitted_at IS NULL)::int AS "unsubmittedCount"
+      FROM quiz_attempts
+      WHERE quiz_id = ${quizId}`;
+
+    const startedCount = Number(before.startedCount);
+    const unsubmittedCount = Number(before.unsubmittedCount);
+    if (shouldExtendQuiz(startedCount, unsubmittedCount)) {
+      await tx`
+        UPDATE quiz_attempts
+        SET
+          expires_at = expires_at + (${quizTimingRules.extensionSeconds} * INTERVAL '1 second'),
+          extension_count = extension_count + 1
+        WHERE quiz_id = ${quizId}
+          AND submitted_at IS NULL
+          AND expires_at > NOW()
+          AND expires_at <= NOW() + (${quizTimingRules.extensionCheckSeconds} * INTERVAL '1 second')`;
+    }
+
+    const expiredAttempts = await tx`
+      SELECT id, student_id AS "studentId", nickname, answers_json AS "answersJson", expires_at AS "expiresAt"
+      FROM quiz_attempts
+      WHERE quiz_id = ${quizId}
+        AND submitted_at IS NULL
+        AND expires_at <= NOW()
+      FOR UPDATE`;
+
+    if (expiredAttempts.length) {
+      const questions = await tx`
+        SELECT correct_index AS "correctIndex"
+        FROM questions
+        WHERE quiz_id = ${quizId}
+        ORDER BY position`;
+
+      for (const attempt of expiredAttempts) {
+        const answers = normalizeAttemptAnswers(attempt.answersJson, questions.length);
+        const correctness = questions.map(
+          (question, index) => Number(question.correctIndex) === answers[index],
+        );
+        const score = correctness.filter(Boolean).length;
+        const [submission] = await tx`
+          INSERT INTO submissions (
+            quiz_id, student_id, nickname, score, total, answers_json, correctness_json, timed_out, submitted_at
+          )
+          VALUES (
+            ${quizId}, ${String(attempt.studentId)}, ${String(attempt.nickname)}, ${score}, ${questions.length},
+            ${tx.json(answers)}, ${tx.json(correctness)}, TRUE, ${attempt.expiresAt}
+          )
+          ON CONFLICT DO NOTHING
+          RETURNING submitted_at AS "submittedAt"`;
+        const submittedAt = submission?.submittedAt || new Date();
+        await tx`
+          UPDATE quiz_attempts
+          SET submitted_at = ${submittedAt}, timed_out = TRUE
+          WHERE id = ${attempt.id}`;
+      }
+    }
+
+    const [progress] = await tx`
+      SELECT
+        COUNT(*)::int AS "startedCount",
+        COUNT(*) FILTER (WHERE submitted_at IS NULL)::int AS "unsubmittedCount",
+        COUNT(*) FILTER (WHERE submitted_at IS NOT NULL)::int AS "submittedCount",
+        COUNT(*) FILTER (WHERE timed_out = TRUE)::int AS "timedOutCount"
+      FROM quiz_attempts
+      WHERE quiz_id = ${quizId}`;
+
+    const finalStartedCount = Number(progress.startedCount);
+    return {
+      startedCount: finalStartedCount,
+      unsubmittedCount: Number(progress.unsubmittedCount),
+      submittedCount: Number(progress.submittedCount),
+      timedOutCount: Number(progress.timedOutCount),
+      enabled: finalStartedCount >= quizTimingRules.minimumParticipants,
+      refreshedAt: new Date().toISOString(),
+    };
+  });
+}
+
+async function readQuizAttemptState(quizId: number, studentId: string, total: number): Promise<QuizAttemptState | null> {
+  const [row] = await pg()`
+    SELECT
+      a.started_at AS "startedAt",
+      a.expires_at AS "expiresAt",
+      a.answers_json AS "answersJson",
+      a.extension_count AS "extensionCount",
+      s.id AS "submissionId",
+      s.score,
+      s.total,
+      s.correctness_json AS "correctnessJson",
+      s.timed_out AS "timedOut"
+    FROM quiz_attempts a
+    LEFT JOIN submissions s
+      ON s.quiz_id = a.quiz_id AND lower(s.student_id) = lower(a.student_id)
+    WHERE a.quiz_id = ${quizId} AND lower(a.student_id) = lower(${studentId})`;
+  if (!row) return null;
+
+  const result: QuizSubmissionResult | null = row.submissionId === null || row.submissionId === undefined ? null : {
+    submissionId: Number(row.submissionId),
+    score: Number(row.score),
+    total: Number(row.total),
+    correctness: normalizeBooleanArray(row.correctnessJson),
+    timedOut: Boolean(row.timedOut),
+  };
+  return {
+    status: result ? "submitted" : "active",
+    startedAt: isoDate(row.startedAt),
+    expiresAt: isoDate(row.expiresAt),
+    answers: normalizeAttemptAnswers(row.answersJson, total),
+    extensionCount: Number(row.extensionCount),
+    result,
+  };
+}
+
+export async function startQuizSession(code: string, studentId: string, nickname: string): Promise<QuizSession | null> {
+  await ensurePostgres();
+  const normalizedCode = code.trim().toUpperCase();
+  const [quiz] = await pg()`
+    SELECT q.id, COUNT(qu.id)::int AS "questionCount"
+    FROM quizzes q
+    LEFT JOIN questions qu ON qu.quiz_id = q.id
+    WHERE q.code = ${normalizedCode} AND q.is_published = TRUE
+    GROUP BY q.id`;
+  if (!quiz) return null;
+
+  const questionCount = Number(quiz.questionCount);
+  const initialAnswers = new Array(questionCount).fill(-1);
+  await pg()`
+    INSERT INTO quiz_attempts (quiz_id, student_id, nickname, answers_json, expires_at)
+    VALUES (
+      ${quiz.id}, ${studentId}, ${nickname}, ${pg().json(initialAnswers)},
+      NOW() + (${quizTimingRules.durationSeconds} * INTERVAL '1 second')
+    )
+    ON CONFLICT DO NOTHING`;
+
+  const progress = await settleQuizTiming(Number(quiz.id));
+  const [publicQuiz, attempt] = await Promise.all([
+    getPublicQuiz(normalizedCode),
+    readQuizAttemptState(Number(quiz.id), studentId, questionCount),
+  ]);
+  if (!publicQuiz || !attempt) return null;
+  return { quiz: publicQuiz, attempt, progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
+}
+
+export async function getQuizAttemptState(code: string, studentId: string) {
+  await ensurePostgres();
+  const [quiz] = await pg()`
+    SELECT q.id, COUNT(qu.id)::int AS "questionCount"
+    FROM quizzes q
+    LEFT JOIN questions qu ON qu.quiz_id = q.id
+    WHERE q.code = ${code.trim().toUpperCase()} AND q.is_published = TRUE
+    GROUP BY q.id`;
+  if (!quiz) return null;
+  const progress = await settleQuizTiming(Number(quiz.id));
+  const attempt = await readQuizAttemptState(Number(quiz.id), studentId, Number(quiz.questionCount));
+  if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
+  return { attempt, progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
+}
+
+export async function saveQuizAnswer(code: string, studentId: string, questionIndex: number, answer: number) {
+  await ensurePostgres();
+  if (!Number.isInteger(questionIndex) || questionIndex < 0 || !Number.isInteger(answer) || answer < 0) {
+    throw new Error("INVALID_ANSWER");
+  }
+  const [quiz] = await pg()`SELECT id FROM quizzes WHERE code = ${code.trim().toUpperCase()} AND is_published = TRUE`;
+  if (!quiz) throw new Error("QUIZ_NOT_FOUND");
+  await settleQuizTiming(Number(quiz.id));
+
+  await pg().begin(async (tx) => {
+    const [attempt] = await tx`
+      SELECT id, answers_json AS "answersJson", submitted_at AS "submittedAt"
+      FROM quiz_attempts
+      WHERE quiz_id = ${quiz.id} AND lower(student_id) = lower(${studentId})
+      FOR UPDATE`;
+    if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
+    if (attempt.submittedAt) return;
+
+    const questions = await tx`
+      SELECT options_json AS "optionsJson"
+      FROM questions
+      WHERE quiz_id = ${quiz.id}
+      ORDER BY position`;
+    const question = questions[questionIndex];
+    const options = question ? normalizeOptions(question.optionsJson) : [];
+    if (!question || answer >= options.length) {
+      throw new Error("INVALID_ANSWER");
+    }
+    const answers = normalizeAttemptAnswers(attempt.answersJson, questions.length);
+    answers[questionIndex] = answer;
+    await tx`UPDATE quiz_attempts SET answers_json = ${tx.json(answers)} WHERE id = ${attempt.id}`;
+  });
+
+  const [questionCount] = await pg()`SELECT COUNT(*)::int AS count FROM questions WHERE quiz_id = ${quiz.id}`;
+  const state = await readQuizAttemptState(Number(quiz.id), studentId, Number(questionCount.count));
+  if (!state) throw new Error("ATTEMPT_NOT_STARTED");
+  return state;
+}
+
+export async function getQuizProgress(codeOrId: string | number) {
+  await ensurePostgres();
+  const [quiz] = typeof codeOrId === "number"
+    ? await pg()`SELECT id FROM quizzes WHERE id = ${codeOrId}`
+    : await pg()`SELECT id FROM quizzes WHERE code = ${codeOrId.trim().toUpperCase()} AND is_published = TRUE`;
+  return quiz ? settleQuizTiming(Number(quiz.id)) : null;
+}
+
 export async function submitQuiz(code: string, studentId: string, nickname: string, answers: number[]) {
   await ensurePostgres();
+
+  const [quizForTiming] = await pg()`SELECT id FROM quizzes WHERE code = ${code.toUpperCase()} AND is_published = TRUE`;
+  if (!quizForTiming) throw new Error("QUIZ_NOT_FOUND");
+  await settleQuizTiming(Number(quizForTiming.id));
 
   try {
     return await pg().begin(async (tx) => {
@@ -373,13 +630,25 @@ export async function submitQuiz(code: string, studentId: string, nickname: stri
         WHERE code = ${code.toUpperCase()} AND is_published = TRUE`;
       if (!quiz) throw new Error("QUIZ_NOT_FOUND");
 
+      const [attempt] = await tx`
+        SELECT id, expires_at AS "expiresAt", submitted_at AS "submittedAt"
+        FROM quiz_attempts
+        WHERE quiz_id = ${quiz.id} AND lower(student_id) = lower(${studentId})
+        FOR UPDATE`;
+      if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
+      if (attempt.submittedAt) throw new Error("ALREADY_SUBMITTED");
+      if (new Date(attempt.expiresAt).getTime() <= Date.now()) throw new Error("ATTEMPT_EXPIRED");
+
       const questions = await tx`
-        SELECT correct_index AS "correctIndex"
+        SELECT correct_index AS "correctIndex", options_json AS "optionsJson"
         FROM questions
         WHERE quiz_id = ${quiz.id}
         ORDER BY position`;
 
-      if (answers.length !== questions.length || answers.some((answer) => !Number.isInteger(answer))) {
+      if (answers.length !== questions.length || answers.some((answer, index) => {
+        const options = normalizeOptions(questions[index].optionsJson);
+        return !Number.isInteger(answer) || answer < 0 || answer >= options.length;
+      })) {
         throw new Error("INVALID_ANSWERS");
       }
 
@@ -390,19 +659,25 @@ export async function submitQuiz(code: string, studentId: string, nickname: stri
 
       const [row] = await tx`
         INSERT INTO submissions (
-          quiz_id, student_id, nickname, score, total, answers_json, correctness_json
+          quiz_id, student_id, nickname, score, total, answers_json, correctness_json, timed_out
         )
         VALUES (
           ${quiz.id}, ${studentId}, ${nickname}, ${score}, ${questions.length},
-          ${tx.json(answers)}, ${tx.json(correctness)}
+          ${tx.json(answers)}, ${tx.json(correctness)}, FALSE
         )
-        RETURNING id`;
+        RETURNING id, submitted_at AS "submittedAt"`;
+
+      await tx`
+        UPDATE quiz_attempts
+        SET answers_json = ${tx.json(answers)}, submitted_at = ${row.submittedAt}, timed_out = FALSE
+        WHERE id = ${attempt.id}`;
 
       return {
         submissionId: Number(row.id),
         score,
         total: questions.length,
         correctness,
+        timedOut: false,
       };
     });
   } catch (error) {
@@ -479,8 +754,17 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
 
 export async function deleteSubmission(id: number) {
   await ensurePostgres();
-  const rows = await pg()`DELETE FROM submissions WHERE id = ${id} RETURNING id`;
-  return rows.length;
+  return pg().begin(async (tx) => {
+    const [submission] = await tx`
+      DELETE FROM submissions
+      WHERE id = ${id}
+      RETURNING id, quiz_id AS "quizId", student_id AS "studentId"`;
+    if (!submission) return 0;
+    await tx`
+      DELETE FROM quiz_attempts
+      WHERE quiz_id = ${submission.quizId} AND lower(student_id) = lower(${String(submission.studentId)})`;
+    return 1;
+  });
 }
 
 export async function authenticateStudent(studentId: string, password: string) {
