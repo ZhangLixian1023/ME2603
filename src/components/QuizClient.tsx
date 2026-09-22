@@ -184,7 +184,7 @@ export default function QuizClient({ code }: { code: string }) {
       </header>
       <section className="quiz-live-bar">
         <div className={remainingSeconds <= 60 ? "countdown-card urgent" : "countdown-card"}><span>{language === "zh" ? "剩余时间" : "Time remaining"}</span><strong>{formatTime(remainingSeconds)}</strong></div>
-        <div className="participation-card"><span>{language === "zh" ? "未提交 / 已开始" : "Not submitted / Started"}</span><strong>{progress?.unsubmittedCount ?? 0} / {progress?.startedCount ?? 0}</strong><small>{language === "zh" ? "每 30 秒刷新一次" : "Updated every 30 seconds"}</small></div>
+        <div className="participation-card"><span>{language === "zh" ? "未提交人数 / 已开始人数" : "Not submitted / Started"}</span><strong>{progress?.unsubmittedCount ?? 0} / {progress?.startedCount ?? 0}</strong><small>{language === "zh" ? "每 30 秒刷新一次" : "Updated every 30 seconds"}</small></div>
         <div className="progress-copy"><strong>{answered}</strong> / {quiz.questions.length} {t("completed")}</div>
       </section>
       <div className="timing-rule">{language === "zh" ? "规则：每位同学进入后自动开始 10 分钟倒计时。至少 5 人开始后，如果进入最后 1 分钟时未提交人数超过已开始人数的 40%，系统自动增加 2 分钟。" : "Rule: Your 10-minute timer starts when you enter. Once at least 5 students have started, 2 minutes are added automatically if more than 40% have not submitted when the final minute begins."}</div>
