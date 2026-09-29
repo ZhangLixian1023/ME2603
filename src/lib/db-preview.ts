@@ -13,6 +13,8 @@ type PreviewQuiz = {
   isPublished: boolean;
   createdAt: string;
   questions: PreviewQuestion[];
+  revision: number;
+  revisions: PreviewQuestion[][];
 };
 type PreviewSubmission = {
   id: number;
@@ -37,6 +39,7 @@ type PreviewAttempt = {
   submittedAt: string | null;
   timedOut: boolean;
   extensionCount: number;
+  revision: number;
 };
 type PreviewStore = {
   quizzes: PreviewQuiz[];
@@ -86,6 +89,8 @@ function createStore(): PreviewStore {
         isPublished: true,
         createdAt: new Date().toISOString(),
         questions,
+        revision: 1,
+        revisions: [questions],
       },
     ],
     submissions: [],
@@ -140,6 +145,7 @@ export async function createQuiz(input: QuizInput) {
   const state = store();
   const code = input.code?.trim().toUpperCase() || generateCode();
   if (state.quizzes.some((quiz) => quiz.code === code)) throw new Error("QUIZ_CODE_EXISTS");
+  const questions = copyQuestions(input.questions);
   const quiz: PreviewQuiz = {
     id: state.nextQuizId++,
     code,
@@ -147,7 +153,9 @@ export async function createQuiz(input: QuizInput) {
     description: input.description || "",
     isPublished: Boolean(input.published),
     createdAt: new Date().toISOString(),
-    questions: copyQuestions(input.questions),
+    questions,
+    revision: 1,
+    revisions: [questions],
   };
   state.quizzes.push(quiz);
   return { id: quiz.id, code: quiz.code };
@@ -192,13 +200,11 @@ export async function updateQuiz(id: number, input: QuizInput) {
   const state = store();
   const quiz = state.quizzes.find((candidate) => candidate.id === id);
   if (!quiz) throw new Error("QUIZ_NOT_FOUND");
-  if (state.attempts.some((attempt) => attempt.quizId === id)) {
-    throw new Error("QUIZ_HAS_SUBMISSIONS");
-  }
-
   quiz.title = input.title;
   quiz.description = input.description || "";
   quiz.questions = copyQuestions(input.questions);
+  quiz.revisions.push(quiz.questions);
+  quiz.revision += 1;
   return { id };
 }
 
@@ -212,7 +218,7 @@ export async function deleteQuiz(id: number) {
   return 1;
 }
 
-export async function getPublicQuiz(code: string): Promise<PublicQuiz | null> {
+export async function getPublicQuiz(code: string, revision?: number): Promise<PublicQuiz | null> {
   const quiz = store().quizzes.find(
     (candidate) => candidate.code === code.trim().toUpperCase() && candidate.isPublished,
   );
@@ -221,7 +227,7 @@ export async function getPublicQuiz(code: string): Promise<PublicQuiz | null> {
     code: quiz.code,
     title: quiz.title,
     description: quiz.description,
-    questions: quiz.questions.map((question) => ({
+    questions: (quiz.revisions[(revision || quiz.revision) - 1] || quiz.questions).map((question) => ({
       id: question.id,
       prompt: question.prompt,
       options: [...question.options],
@@ -230,12 +236,18 @@ export async function getPublicQuiz(code: string): Promise<PublicQuiz | null> {
   };
 }
 
-export async function getPublicQuestionImageKey(code: string, questionId: number) {
+export async function getPublicQuestionImageKey(code: string, questionId: number, studentId: string) {
   const quiz = store().quizzes.find(
     (candidate) => candidate.code === code.trim().toUpperCase() && candidate.isPublished,
   );
-  const question = quiz?.questions.find((candidate) => candidate.id === questionId);
+  const attempt = quiz && findAttempt(quiz.id, studentId);
+  const question = attempt && quiz?.revisions[attempt.revision - 1].find((candidate) => candidate.id === questionId);
   return question?.imageKey || null;
+}
+
+export async function getQuizImageKeys(id: number): Promise<string[]> {
+  const quiz = store().quizzes.find((candidate) => candidate.id === id);
+  return [...new Set(quiz?.revisions.flat().map((question) => question.imageKey).filter((key): key is string => Boolean(key)) || [])];
 }
 
 export async function setQuizPublished(id: number, published: boolean) {
@@ -249,6 +261,10 @@ function findAttempt(quizId: number, studentId: string) {
   return store().attempts.find(
     (attempt) => attempt.quizId === quizId && attempt.studentId.toLowerCase() === studentId.toLowerCase(),
   );
+}
+
+function questionsForAttempt(quiz: PreviewQuiz, attempt: PreviewAttempt) {
+  return quiz.revisions[attempt.revision - 1];
 }
 
 function submissionResult(submission: PreviewSubmission): QuizSubmissionResult {
@@ -272,8 +288,9 @@ function finalizePreviewAttempt(attempt: PreviewAttempt, quiz: PreviewQuiz, time
     return existing;
   }
 
-  const answers = quiz.questions.map((_, index) => attempt.answers[index] ?? -1);
-  const correctness = quiz.questions.map((question, index) => question.correctIndex === answers[index]);
+  const questions = questionsForAttempt(quiz, attempt);
+  const answers = questions.map((_, index) => attempt.answers[index] ?? -1);
+  const correctness = questions.map((question, index) => question.correctIndex === answers[index]);
   const submittedAt = timedOut ? attempt.expiresAt : new Date().toISOString();
   const submission: PreviewSubmission = {
     id: state.nextSubmissionId++,
@@ -281,7 +298,7 @@ function finalizePreviewAttempt(attempt: PreviewAttempt, quiz: PreviewQuiz, time
     studentId: attempt.studentId,
     nickname: attempt.nickname,
     score: correctness.filter(Boolean).length,
-    total: quiz.questions.length,
+    total: questions.length,
     answers,
     correctness,
     submittedAt,
@@ -365,12 +382,13 @@ export async function startQuizSession(code: string, studentId: string, nickname
       submittedAt: null,
       timedOut: false,
       extensionCount: 0,
+      revision: quiz.revision,
     };
     state.attempts.push(attempt);
   }
 
   const progress = previewProgress(quiz);
-  const publicQuiz = await getPublicQuiz(quiz.code);
+  const publicQuiz = await getPublicQuiz(quiz.code, attempt.revision);
   if (!publicQuiz) return null;
   return { quiz: publicQuiz, attempt: previewAttemptState(quiz, attempt), progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
 }
@@ -395,7 +413,7 @@ export async function saveQuizAnswer(code: string, studentId: string, questionIn
   if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
   refreshPreviewTiming(quiz);
   if (attempt.submittedAt) return previewAttemptState(quiz, attempt);
-  const question = quiz.questions[questionIndex];
+  const question = questionsForAttempt(quiz, attempt)[questionIndex];
   if (!question || !Number.isInteger(answer) || answer < 0 || answer >= question.options.length) throw new Error("INVALID_ANSWER");
   attempt.answers[questionIndex] = answer;
   return previewAttemptState(quiz, attempt);
@@ -434,15 +452,16 @@ export async function submitQuiz(
 
   const attempt = findAttempt(quiz.id, studentId);
   if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
+  const questions = questionsForAttempt(quiz, attempt);
 
   if (
-    answers.length !== quiz.questions.length ||
-    answers.some((answer, index) => !Number.isInteger(answer) || answer < 0 || answer >= quiz.questions[index].options.length)
+    answers.length !== questions.length ||
+    answers.some((answer, index) => !Number.isInteger(answer) || answer < 0 || answer >= questions[index].options.length)
   ) {
     throw new Error("INVALID_ANSWERS");
   }
 
-  const correctness = quiz.questions.map(
+  const correctness = questions.map(
     (question, index) => question.correctIndex === answers[index],
   );
   const score = correctness.filter(Boolean).length;
@@ -452,7 +471,7 @@ export async function submitQuiz(
     studentId,
     nickname,
     score,
-    total: quiz.questions.length,
+    total: questions.length,
     answers: [...answers],
     correctness,
     submittedAt: new Date().toISOString(),
@@ -517,18 +536,24 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
       submittedAt: submission.submittedAt,
     }));
 
+  const currentRevisionSubmissions = state.submissions.filter((submission) =>
+    submission.quizId === id && state.attempts.some((attempt) =>
+      attempt.quizId === id && attempt.studentId.toLowerCase() === submission.studentId.toLowerCase() && attempt.revision === quiz.revision,
+    ),
+  );
+  const totalCorrect = submissions.reduce((sum, item) => sum + item.score, 0);
+  const totalQuestions = submissions.reduce((sum, item) => sum + item.total, 0);
+
   return {
     quiz: { id: quiz.id, code: quiz.code, title: quiz.title },
     statistics: {
       submissionCount: submissions.length,
       averageScore: submissions.length ? submissions.reduce((sum, item) => sum + item.score, 0) / submissions.length : 0,
-      averageAccuracy: submissions.length && quiz.questions.length ? submissions.reduce((sum, item) => sum + item.score, 0) / (submissions.length * quiz.questions.length) : 0,
+      averageAccuracy: totalQuestions ? totalCorrect / totalQuestions : 0,
+      currentRevisionSubmissionCount: currentRevisionSubmissions.length,
       questions: quiz.questions.map((question, index) => {
-        const correctCount = submissions.filter((submission) => {
-          const original = state.submissions.find((candidate) => candidate.id === submission.id);
-          return Boolean(original?.correctness[index]);
-        }).length;
-        return { questionId: question.id, prompt: question.prompt, correctCount, responseCount: submissions.length, accuracy: submissions.length ? correctCount / submissions.length : 0 };
+        const correctCount = currentRevisionSubmissions.filter((submission) => submission.correctness[index]).length;
+        return { questionId: question.id, prompt: question.prompt, correctCount, responseCount: currentRevisionSubmissions.length, accuracy: currentRevisionSubmissions.length ? correctCount / currentRevisionSubmissions.length : 0 };
       }),
     },
     submissions,

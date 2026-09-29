@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isValidSession } from "@/lib/auth";
-import { deleteQuiz, getTeacherQuiz, updateQuiz, type QuestionInput } from "@/lib/db";
+import { deleteQuiz, getQuizImageKeys, getTeacherQuiz, updateQuiz, type QuestionInput } from "@/lib/db";
 import { deleteQuestionImages, isQuestionImageKey } from "@/lib/question-images";
 import { audit } from "@/lib/security";
 
@@ -31,21 +31,18 @@ export async function PUT(request: NextRequest, context: RouteContext<"/api/teac
   if (!validInput(body)) return NextResponse.json({ error: "请完整填写标题、题目文字或图片、选项和正确答案" }, { status: 400 });
   const existingQuiz = await getTeacherQuiz(Number(id));
   if (!existingQuiz) return NextResponse.json({ error:"测验不存在" }, { status:404 });
-  const oldImageKeys = existingQuiz.questions.map((question) => question.imageKey);
   const normalizedQuestions = body!.questions!.map((q) => ({ prompt:(q.prompt || "").trim(), options:q.options.map((o)=>o.trim()), correctIndex:q.correctIndex, imageKey:q.imageKey || null }));
   try {
     await updateQuiz(Number(id), {
       title: body!.title!.trim(), description: body!.description?.trim().slice(0, 240),
       questions: normalizedQuestions,
     });
-    const retainedKeys = new Set(normalizedQuestions.map((question) => question.imageKey).filter(Boolean));
-    await deleteQuestionImages(oldImageKeys.filter((key) => key && !retainedKeys.has(key)));
+    // Earlier revisions (including their image objects) remain available to students who started before this edit.
     audit("quiz.updated", { quizId:Number(id) });
     return NextResponse.json({ ok:true });
   } catch (error) {
-    const existingKeys = new Set(oldImageKeys.filter(Boolean));
+    const existingKeys = new Set(await getQuizImageKeys(Number(id)));
     await deleteQuestionImages(normalizedQuestions.map((question) => question.imageKey).filter((key) => key && !existingKeys.has(key)));
-    if (error instanceof Error && error.message === "QUIZ_HAS_SUBMISSIONS") return NextResponse.json({ error:"已有学生开始答题，不能再修改题目。可新建一份测验。" }, { status:409 });
     if (error instanceof Error && error.message === "QUIZ_NOT_FOUND") return NextResponse.json({ error:"测验不存在" }, { status:404 });
     throw error;
   }
@@ -54,8 +51,8 @@ export async function PUT(request: NextRequest, context: RouteContext<"/api/teac
 export async function DELETE(request: NextRequest, context: RouteContext<"/api/teacher/quizzes/[id]">) {
   if (!isValidSession(request)) return NextResponse.json({ error: "请先登录" }, { status: 401 });
   const { id } = await context.params;
-  const quizId=Number(id); const quiz=await getTeacherQuiz(quizId); const changes=await deleteQuiz(quizId);
+  const quizId=Number(id); const imageKeys=await getQuizImageKeys(quizId); const changes=await deleteQuiz(quizId);
   if(!changes) return NextResponse.json({error:"测验不存在"},{status:404});
-  await deleteQuestionImages(quiz?.questions.map((question) => question.imageKey) || []);
+  await deleteQuestionImages(imageKeys);
   audit("quiz.deleted",{quizId}); return NextResponse.json({ok:true});
 }

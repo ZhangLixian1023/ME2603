@@ -6,11 +6,12 @@ import { authenticatedStudentFromRequest } from "@/lib/student-session";
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest, context: RouteContext<"/api/quizzes/[code]/questions/[questionId]/image">) {
-  if (!await authenticatedStudentFromRequest(request)) return new NextResponse(null, { status: 401 });
+  const student = await authenticatedStudentFromRequest(request);
+  if (!student) return new NextResponse(null, { status: 401 });
   const { code, questionId } = await context.params;
   const numericQuestionId = Number(questionId);
   if (!Number.isSafeInteger(numericQuestionId) || numericQuestionId < 1) return new NextResponse(null, { status: 404 });
-  const imageKey = await getPublicQuestionImageKey(code, numericQuestionId);
+  const imageKey = await getPublicQuestionImageKey(code, numericQuestionId, student.studentId);
   if (!imageKey) return new NextResponse(null, { status: 404 });
   const object = await getObject(imageKey);
   if (!object) return new NextResponse(null, { status: 404 });

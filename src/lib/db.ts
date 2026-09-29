@@ -20,6 +20,7 @@ export const getQuizAttemptState = database.getQuizAttemptState;
 export const saveQuizAnswer = database.saveQuizAnswer;
 export const getQuizProgress = database.getQuizProgress;
 export const getPublicQuestionImageKey = database.getPublicQuestionImageKey;
+export const getQuizImageKeys = database.getQuizImageKeys;
 export const setQuizPublished = database.setQuizPublished;
 export const submitQuiz = database.submitQuiz;
 export const getLeaderboard = database.getLeaderboard;

@@ -69,6 +69,7 @@ export type QuizResults = {
     submissionCount: number;
     averageScore: number;
     averageAccuracy: number;
+    currentRevisionSubmissionCount: number;
     questions: Array<{ questionId: number; prompt: string; correctCount: number; responseCount: number; accuracy: number }>;
   };
   submissions: Array<{

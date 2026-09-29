@@ -84,8 +84,10 @@ async function ensurePostgres() {
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         is_published BOOLEAN NOT NULL DEFAULT FALSE,
+        revision INTEGER NOT NULL DEFAULT 1,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )`;
+    await sql`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1`;
 
     await sql`
       CREATE TABLE IF NOT EXISTS questions (
@@ -95,10 +97,12 @@ async function ensurePostgres() {
         options_json JSONB NOT NULL,
         correct_index INTEGER NOT NULL,
         position INTEGER NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1,
         image_key TEXT
       )`;
 
     await sql`ALTER TABLE questions ADD COLUMN IF NOT EXISTS image_key TEXT`;
+    await sql`ALTER TABLE questions ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1`;
 
     await sql`
       CREATE TABLE IF NOT EXISTS submissions (
@@ -129,6 +133,7 @@ async function ensurePostgres() {
         timed_out BOOLEAN NOT NULL DEFAULT FALSE,
         extension_count INTEGER NOT NULL DEFAULT 0
       )`;
+    await sql`ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1`;
 
     await sql`
       CREATE TABLE IF NOT EXISTS students (
@@ -170,7 +175,7 @@ async function ensurePostgres() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )`;
 
-    await sql`CREATE INDEX IF NOT EXISTS questions_quiz_position_idx ON questions (quiz_id, position)`;
+    await sql`CREATE INDEX IF NOT EXISTS questions_quiz_revision_position_idx ON questions (quiz_id, revision, position)`;
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS submissions_quiz_student_unique ON submissions (quiz_id, lower(student_id))`;
     await sql`CREATE INDEX IF NOT EXISTS submissions_leaderboard_idx ON submissions (quiz_id, score DESC, submitted_at ASC)`;
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS quiz_attempts_quiz_student_unique ON quiz_attempts (quiz_id, lower(student_id))`;
@@ -274,7 +279,7 @@ export async function listQuizzes() {
       COUNT(DISTINCT qu.id)::int AS "questionCount",
       COUNT(DISTINCT s.id)::int AS "submissionCount"
     FROM quizzes q
-    LEFT JOIN questions qu ON qu.quiz_id = q.id
+    LEFT JOIN questions qu ON qu.quiz_id = q.id AND qu.revision = q.revision
     LEFT JOIN submissions s ON s.quiz_id = q.id
     GROUP BY q.id
     ORDER BY q.id DESC`;
@@ -294,7 +299,7 @@ export async function getTeacherQuiz(id: number) {
   const questions = await pg()`
     SELECT id, prompt, options_json AS "optionsJson", correct_index AS "correctIndex", image_key AS "imageKey"
     FROM questions
-    WHERE quiz_id = ${id}
+    WHERE quiz_id = ${id} AND revision = (SELECT revision FROM quizzes WHERE id = ${id})
     ORDER BY position`;
 
   return {
@@ -313,22 +318,19 @@ export async function updateQuiz(id: number, input: QuizInput) {
   await ensurePostgres();
 
   return pg().begin(async (tx) => {
-    const [{ count }] = await tx`SELECT COUNT(*)::int AS count FROM quiz_attempts WHERE quiz_id = ${id}`;
-    if (Number(count) > 0) throw new Error("QUIZ_HAS_SUBMISSIONS");
-
-    const changed = await tx`
+    // Serialize an edit with new starts so each student receives one immutable question revision.
+    const [changed] = await tx`
       UPDATE quizzes
-      SET title = ${input.title}, description = ${input.description || ""}
+      SET title = ${input.title}, description = ${input.description || ""}, revision = revision + 1
       WHERE id = ${id}
-      RETURNING id`;
-    if (!changed.length) throw new Error("QUIZ_NOT_FOUND");
+      RETURNING id, revision`;
+    if (!changed) throw new Error("QUIZ_NOT_FOUND");
 
-    await tx`DELETE FROM questions WHERE quiz_id = ${id}`;
     for (let index = 0; index < input.questions.length; index += 1) {
       const question = input.questions[index];
       await tx`
-        INSERT INTO questions (quiz_id, prompt, options_json, correct_index, position, image_key)
-        VALUES (${id}, ${question.prompt}, ${tx.json(question.options)}, ${question.correctIndex}, ${index}, ${question.imageKey || null})`;
+        INSERT INTO questions (quiz_id, prompt, options_json, correct_index, position, image_key, revision)
+        VALUES (${id}, ${question.prompt}, ${tx.json(question.options)}, ${question.correctIndex}, ${index}, ${question.imageKey || null}, ${changed.revision})`;
     }
 
     return { id };
@@ -341,10 +343,10 @@ export async function deleteQuiz(id: number) {
   return rows.length;
 }
 
-export async function getPublicQuiz(code: string): Promise<PublicQuiz | null> {
+export async function getPublicQuiz(code: string, revision?: number): Promise<PublicQuiz | null> {
   await ensurePostgres();
   const [quiz] = await pg()`
-    SELECT id, code, title, description
+    SELECT id, code, title, description, revision
     FROM quizzes
     WHERE code = ${code.trim().toUpperCase()} AND is_published = TRUE`;
 
@@ -353,7 +355,7 @@ export async function getPublicQuiz(code: string): Promise<PublicQuiz | null> {
   const questions = await pg()`
     SELECT id, prompt, options_json AS "optionsJson", image_key AS "imageKey"
     FROM questions
-    WHERE quiz_id = ${quiz.id}
+    WHERE quiz_id = ${quiz.id} AND revision = ${revision ?? Number(quiz.revision)}
     ORDER BY position`;
 
   return {
@@ -369,16 +371,24 @@ export async function getPublicQuiz(code: string): Promise<PublicQuiz | null> {
   };
 }
 
-export async function getPublicQuestionImageKey(code: string, questionId: number) {
+export async function getPublicQuestionImageKey(code: string, questionId: number, studentId: string) {
   await ensurePostgres();
   const [question] = await pg()`
     SELECT qu.image_key AS "imageKey"
     FROM questions qu
     JOIN quizzes q ON q.id = qu.quiz_id
+    JOIN quiz_attempts a ON a.quiz_id = q.id AND a.revision = qu.revision
     WHERE q.code = ${code.trim().toUpperCase()}
       AND q.is_published = TRUE
+      AND lower(a.student_id) = lower(${studentId})
       AND qu.id = ${questionId}`;
   return question?.imageKey ? String(question.imageKey) : null;
+}
+
+export async function getQuizImageKeys(id: number): Promise<string[]> {
+  await ensurePostgres();
+  const rows = await pg()`SELECT DISTINCT image_key FROM questions WHERE quiz_id = ${id} AND image_key IS NOT NULL`;
+  return rows.map((row) => String(row.imageKey || row.image_key));
 }
 
 export async function setQuizPublished(id: number, published: boolean) {
@@ -429,7 +439,7 @@ async function settleQuizTiming(quizId: number): Promise<QuizProgress> {
     }
 
     const expiredAttempts = await tx`
-      SELECT id, student_id AS "studentId", nickname, answers_json AS "answersJson", expires_at AS "expiresAt"
+      SELECT id, student_id AS "studentId", nickname, answers_json AS "answersJson", expires_at AS "expiresAt", revision
       FROM quiz_attempts
       WHERE quiz_id = ${quizId}
         AND submitted_at IS NULL
@@ -438,14 +448,15 @@ async function settleQuizTiming(quizId: number): Promise<QuizProgress> {
 
     if (expiredAttempts.length) {
       const questions = await tx`
-        SELECT correct_index AS "correctIndex"
+        SELECT revision, correct_index AS "correctIndex"
         FROM questions
         WHERE quiz_id = ${quizId}
-        ORDER BY position`;
+        ORDER BY revision, position`;
 
       for (const attempt of expiredAttempts) {
-        const answers = normalizeAttemptAnswers(attempt.answersJson, questions.length);
-        const correctness = questions.map(
+        const versionQuestions = questions.filter((question) => Number(question.revision) === Number(attempt.revision));
+        const answers = normalizeAttemptAnswers(attempt.answersJson, versionQuestions.length);
+        const correctness = versionQuestions.map(
           (question, index) => Number(question.correctIndex) === answers[index],
         );
         const score = correctness.filter(Boolean).length;
@@ -454,7 +465,7 @@ async function settleQuizTiming(quizId: number): Promise<QuizProgress> {
             quiz_id, student_id, nickname, score, total, answers_json, correctness_json, timed_out, submitted_at
           )
           VALUES (
-            ${quizId}, ${String(attempt.studentId)}, ${String(attempt.nickname)}, ${score}, ${questions.length},
+            ${quizId}, ${String(attempt.studentId)}, ${String(attempt.nickname)}, ${score}, ${versionQuestions.length},
             ${tx.json(answers)}, ${tx.json(correctness)}, TRUE, ${attempt.expiresAt}
           )
           ON CONFLICT DO NOTHING
@@ -526,28 +537,36 @@ async function readQuizAttemptState(quizId: number, studentId: string, total: nu
 export async function startQuizSession(code: string, studentId: string, nickname: string): Promise<QuizSession | null> {
   await ensurePostgres();
   const normalizedCode = code.trim().toUpperCase();
-  const [quiz] = await pg()`
-    SELECT q.id, COUNT(qu.id)::int AS "questionCount"
-    FROM quizzes q
-    LEFT JOIN questions qu ON qu.quiz_id = q.id
-    WHERE q.code = ${normalizedCode} AND q.is_published = TRUE
-    GROUP BY q.id`;
-  if (!quiz) return null;
+  const started = await pg().begin(async (tx) => {
+    const [quiz] = await tx`
+      SELECT id, revision FROM quizzes
+      WHERE code = ${normalizedCode} AND is_published = TRUE
+      FOR UPDATE`;
+    if (!quiz) return null;
+    const [count] = await tx`
+      SELECT COUNT(*)::int AS count FROM questions
+      WHERE quiz_id = ${quiz.id} AND revision = ${quiz.revision}`;
+    await tx`
+      INSERT INTO quiz_attempts (quiz_id, student_id, nickname, answers_json, expires_at, revision)
+      VALUES (
+        ${quiz.id}, ${studentId}, ${nickname}, ${tx.json(new Array(Number(count.count)).fill(-1))},
+        NOW() + (${quizTimingRules.durationSeconds} * INTERVAL '1 second'), ${quiz.revision}
+      )
+      ON CONFLICT DO NOTHING`;
+    const [attempt] = await tx`
+      SELECT revision FROM quiz_attempts
+      WHERE quiz_id = ${quiz.id} AND lower(student_id) = lower(${studentId})`;
+    const [attemptCount] = await tx`
+      SELECT COUNT(*)::int AS count FROM questions
+      WHERE quiz_id = ${quiz.id} AND revision = ${attempt.revision}`;
+    return { quizId: Number(quiz.id), revision: Number(attempt.revision), questionCount: Number(attemptCount.count) };
+  });
+  if (!started) return null;
 
-  const questionCount = Number(quiz.questionCount);
-  const initialAnswers = new Array(questionCount).fill(-1);
-  await pg()`
-    INSERT INTO quiz_attempts (quiz_id, student_id, nickname, answers_json, expires_at)
-    VALUES (
-      ${quiz.id}, ${studentId}, ${nickname}, ${pg().json(initialAnswers)},
-      NOW() + (${quizTimingRules.durationSeconds} * INTERVAL '1 second')
-    )
-    ON CONFLICT DO NOTHING`;
-
-  const progress = await settleQuizTiming(Number(quiz.id));
+  const progress = await settleQuizTiming(started.quizId);
   const [publicQuiz, attempt] = await Promise.all([
-    getPublicQuiz(normalizedCode),
-    readQuizAttemptState(Number(quiz.id), studentId, questionCount),
+    getPublicQuiz(normalizedCode, started.revision),
+    readQuizAttemptState(started.quizId, studentId, started.questionCount),
   ]);
   if (!publicQuiz || !attempt) return null;
   return { quiz: publicQuiz, attempt, progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
@@ -556,14 +575,16 @@ export async function startQuizSession(code: string, studentId: string, nickname
 export async function getQuizAttemptState(code: string, studentId: string) {
   await ensurePostgres();
   const [quiz] = await pg()`
-    SELECT q.id, COUNT(qu.id)::int AS "questionCount"
-    FROM quizzes q
-    LEFT JOIN questions qu ON qu.quiz_id = q.id
-    WHERE q.code = ${code.trim().toUpperCase()} AND q.is_published = TRUE
-    GROUP BY q.id`;
+    SELECT id FROM quizzes WHERE code = ${code.trim().toUpperCase()} AND is_published = TRUE`;
   if (!quiz) return null;
   const progress = await settleQuizTiming(Number(quiz.id));
-  const attempt = await readQuizAttemptState(Number(quiz.id), studentId, Number(quiz.questionCount));
+  const [count] = await pg()`
+    SELECT COUNT(qu.id)::int AS count
+    FROM quiz_attempts a
+    LEFT JOIN questions qu ON qu.quiz_id = a.quiz_id AND qu.revision = a.revision
+    WHERE a.quiz_id = ${quiz.id} AND lower(a.student_id) = lower(${studentId})
+    GROUP BY a.id`;
+  const attempt = count ? await readQuizAttemptState(Number(quiz.id), studentId, Number(count.count)) : null;
   if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
   return { attempt, progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
 }
@@ -579,7 +600,7 @@ export async function saveQuizAnswer(code: string, studentId: string, questionIn
 
   await pg().begin(async (tx) => {
     const [attempt] = await tx`
-      SELECT id, answers_json AS "answersJson", submitted_at AS "submittedAt"
+      SELECT id, answers_json AS "answersJson", submitted_at AS "submittedAt", revision
       FROM quiz_attempts
       WHERE quiz_id = ${quiz.id} AND lower(student_id) = lower(${studentId})
       FOR UPDATE`;
@@ -589,7 +610,7 @@ export async function saveQuizAnswer(code: string, studentId: string, questionIn
     const questions = await tx`
       SELECT options_json AS "optionsJson"
       FROM questions
-      WHERE quiz_id = ${quiz.id}
+      WHERE quiz_id = ${quiz.id} AND revision = ${attempt.revision}
       ORDER BY position`;
     const question = questions[questionIndex];
     const options = question ? normalizeOptions(question.optionsJson) : [];
@@ -601,7 +622,10 @@ export async function saveQuizAnswer(code: string, studentId: string, questionIn
     await tx`UPDATE quiz_attempts SET answers_json = ${tx.json(answers)} WHERE id = ${attempt.id}`;
   });
 
-  const [questionCount] = await pg()`SELECT COUNT(*)::int AS count FROM questions WHERE quiz_id = ${quiz.id}`;
+  const [questionCount] = await pg()`
+    SELECT COUNT(qu.id)::int AS count FROM quiz_attempts a
+    JOIN questions qu ON qu.quiz_id = a.quiz_id AND qu.revision = a.revision
+    WHERE a.quiz_id = ${quiz.id} AND lower(a.student_id) = lower(${studentId})`;
   const state = await readQuizAttemptState(Number(quiz.id), studentId, Number(questionCount.count));
   if (!state) throw new Error("ATTEMPT_NOT_STARTED");
   return state;
@@ -631,7 +655,7 @@ export async function submitQuiz(code: string, studentId: string, nickname: stri
       if (!quiz) throw new Error("QUIZ_NOT_FOUND");
 
       const [attempt] = await tx`
-        SELECT id, expires_at AS "expiresAt", submitted_at AS "submittedAt"
+        SELECT id, expires_at AS "expiresAt", submitted_at AS "submittedAt", revision
         FROM quiz_attempts
         WHERE quiz_id = ${quiz.id} AND lower(student_id) = lower(${studentId})
         FOR UPDATE`;
@@ -642,7 +666,7 @@ export async function submitQuiz(code: string, studentId: string, nickname: stri
       const questions = await tx`
         SELECT correct_index AS "correctIndex", options_json AS "optionsJson"
         FROM questions
-        WHERE quiz_id = ${quiz.id}
+        WHERE quiz_id = ${quiz.id} AND revision = ${attempt.revision}
         ORDER BY position`;
 
       if (answers.length !== questions.length || answers.some((answer, index) => {
@@ -705,27 +729,30 @@ export async function getLeaderboard(code: string) {
 
 export async function getQuizResults(id: number): Promise<QuizResults | null> {
   await ensurePostgres();
-  const [quiz] = await pg()`SELECT id, code, title FROM quizzes WHERE id = ${id}`;
+  const [quiz] = await pg()`SELECT id, code, title, revision FROM quizzes WHERE id = ${id}`;
   if (!quiz) return null;
 
   const submissions = await pg()`
     SELECT
-      id,
-      student_id AS "studentId",
-      nickname,
-      score,
-      total,
-      submitted_at AS "submittedAt",
-      correctness_json AS "correctnessJson"
-    FROM submissions
-    WHERE quiz_id = ${id}
-    ORDER BY score DESC, submitted_at ASC`;
+      s.id,
+      s.student_id AS "studentId",
+      s.nickname,
+      s.score,
+      s.total,
+      s.submitted_at AS "submittedAt",
+      s.correctness_json AS "correctnessJson",
+      a.revision
+    FROM submissions s
+    LEFT JOIN quiz_attempts a ON a.quiz_id = s.quiz_id AND lower(a.student_id) = lower(s.student_id)
+    WHERE s.quiz_id = ${id}
+    ORDER BY s.score DESC, s.submitted_at ASC`;
 
-  const questions = await pg()`SELECT id, prompt FROM questions WHERE quiz_id = ${id} ORDER BY position`;
-  const correctnessRows = submissions.map((submission) => Array.isArray(submission.correctnessJson) ? submission.correctnessJson.map(Boolean) : JSON.parse(String(submission.correctnessJson)).map(Boolean));
+  const questions = await pg()`SELECT id, prompt FROM questions WHERE quiz_id = ${id} AND revision = ${quiz.revision} ORDER BY position`;
+  const currentRevisionSubmissions = submissions.filter((submission) => Number(submission.revision) === Number(quiz.revision));
+  const correctnessRows = currentRevisionSubmissions.map((submission) => normalizeBooleanArray(submission.correctnessJson));
   const submissionCount = submissions.length;
   const totalScore = submissions.reduce((sum, submission) => sum + Number(submission.score), 0);
-  const totalQuestions = questions.length;
+  const totalAnsweredQuestions = submissions.reduce((sum, submission) => sum + Number(submission.total), 0);
   return {
     quiz: {
       id: Number(quiz.id),
@@ -735,10 +762,11 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
     statistics: {
       submissionCount,
       averageScore: submissionCount ? totalScore / submissionCount : 0,
-      averageAccuracy: submissionCount && totalQuestions ? totalScore / (submissionCount * totalQuestions) : 0,
+      averageAccuracy: totalAnsweredQuestions ? totalScore / totalAnsweredQuestions : 0,
+      currentRevisionSubmissionCount: currentRevisionSubmissions.length,
       questions: questions.map((question, index) => {
         const correctCount = correctnessRows.filter((row) => row[index]).length;
-        return { questionId: Number(question.id), prompt: String(question.prompt), correctCount, responseCount: submissionCount, accuracy: submissionCount ? correctCount / submissionCount : 0 };
+        return { questionId: Number(question.id), prompt: String(question.prompt), correctCount, responseCount: correctnessRows.length, accuracy: correctnessRows.length ? correctCount / correctnessRows.length : 0 };
       }),
     },
     submissions: submissions.map((submission) => ({
@@ -835,7 +863,7 @@ export async function getGradebook(): Promise<Gradebook> {
       q.title,
       COUNT(qu.id)::int AS total
     FROM quizzes q
-    LEFT JOIN questions qu ON qu.quiz_id = q.id
+    LEFT JOIN questions qu ON qu.quiz_id = q.id AND qu.revision = q.revision
     GROUP BY q.id
     ORDER BY q.created_at ASC, q.id ASC`;
 

@@ -13,7 +13,7 @@ import TeacherTools from "./TeacherTools";
 type QuizSummary = { id: number; code: string; title: string; description: string; isPublished: boolean; questionCount: number; submissionCount: number };
 type DraftQuestion = { prompt: string; options: string[]; correctIndex: number; imageKey: string | null; imageFile: File | null; imagePreview: string | null };
 type Submission = { id: number; studentId: string; nickname: string; score: number; total: number; submittedAt: string };
-type Statistics = { submissionCount:number; averageScore:number; averageAccuracy:number; questions:Array<{questionId:number;prompt:string;correctCount:number;responseCount:number;accuracy:number}> };
+type Statistics = { submissionCount:number; averageScore:number; averageAccuracy:number; currentRevisionSubmissionCount:number; questions:Array<{questionId:number;prompt:string;correctCount:number;responseCount:number;accuracy:number}> };
 type QuizProgress = { startedCount:number; unsubmittedCount:number; submittedCount:number; timedOutCount:number; enabled:boolean; refreshedAt:string };
 
 const blankQuestion = (): DraftQuestion => ({ prompt: "", options: ["", "", "", ""], correctIndex: 0, imageKey: null, imageFile: null, imagePreview: null });
@@ -125,6 +125,7 @@ export default function TeacherDashboard() {
     const published = submitter?.value === "publish";
     const uploadedKeys: string[] = [];
     const wasEditing = editingId !== null;
+    let saved = false;
     try {
       const preparedQuestions = [];
       for (const question of questions) {
@@ -149,14 +150,15 @@ export default function TeacherDashboard() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(localizeApiError(data.error, language, "saveFailed"));
+      saved = true;
 
       questions.forEach(releasePreview);
       setQuizCode(""); setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setCreating(false); setEditingId(null);
-      if (wasEditing) setNotice(t("quizUpdated"));
+      if (wasEditing) setNotice(language === "zh" ? "测验已更新。已开始的学生继续使用原题目，之后开始的学生使用新题目；已有成绩不变。" : "Quiz updated. Existing attempts keep their original questions; new attempts use the new version. Previous scores stay unchanged.");
       else setNotice(t("quizCreated").replace("{code}", data.quiz.code).replace("{status}", published ? t("studentsCanEnter") : t("publishToOpen")));
       await loadQuizzes();
     } catch (reason) {
-      await Promise.allSettled(uploadedKeys.map((imageKey) => fetch("/api/teacher/question-images", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageKey }) })));
+      if (!saved) await Promise.allSettled(uploadedKeys.map((imageKey) => fetch("/api/teacher/question-images", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageKey }) })));
       setError(reason instanceof Error ? reason.message : t("saveFailed"));
     } finally {
       setBusy(false);
@@ -252,6 +254,7 @@ export default function TeacherDashboard() {
             <div className="modal-head"><div><span className="tiny-label">{t("teacherVisible")}</span><h2>{t("studentResults")}</h2></div><button onClick={() => { setActiveResults(null); setQuizProgress(null); }}>×</button></div>
             {quizProgress && <div className="live-progress-summary"><div><span>{language === "zh" ? "未提交人数 / 已开始人数" : "Not submitted / Started"}</span><strong>{quizProgress.unsubmittedCount} / {quizProgress.startedCount}</strong></div><div><span>{language === "zh" ? "已提交" : "Submitted"}</span><strong>{quizProgress.submittedCount}</strong></div><div><span>{language === "zh" ? "其中超时提交" : "Auto-submitted"}</span><strong>{quizProgress.timedOutCount}</strong></div><small>{language === "zh" ? "每 30 秒刷新；满 5 人后启用 40% 自动延时规则" : "Updates every 30 seconds; the 40% extension rule activates after 5 students start"}</small></div>}
             {statistics && <div className="analytics-summary"><article><span>{language==='zh'?'提交人数':'Submissions'}</span><strong>{statistics.submissionCount}</strong></article><article><span>{language==='zh'?'平均正确题数':'Average score'}</span><strong>{statistics.averageScore.toFixed(1)}</strong></article><article><span>{language==='zh'?'平均正确率':'Average accuracy'}</span><strong>{(statistics.averageAccuracy*100).toFixed(1)}%</strong></article></div>}
+            {statistics && <p className="timing-rule">{language === "zh" ? `每题统计仅计入当前题目版本的 ${statistics.currentRevisionSubmissionCount} 份答卷；整体平均分和正确率包括全部版本。` : `Per-question stats use ${statistics.currentRevisionSubmissionCount} submissions from the current question version; overall averages include all versions.`}</p>}
             {statistics && statistics.questions.length>0 && <div className="question-stats">{statistics.questions.map((question,index)=><div key={question.questionId}><span>{index+1}. {question.prompt ? <MathText>{question.prompt}</MathText> : (language === "zh" ? "图片题" : "Image question")}</span><b>{(question.accuracy*100).toFixed(1)}% ({question.correctCount}/{question.responseCount})</b></div>)}</div>}
             {busy ? <p className="empty-state">{t("loading")}</p> : results.length === 0 ? <div className="empty-state"><b>{t("noSubmissions")}</b><p>{t("noSubmissionsDetail")}</p></div> : (<div className="results-table"><div className="results-tr header"><span>{t("nickname")}</span><span>{t("studentId")}</span><span>{t("correctAnswers")}</span><span>{t("action")}</span></div>{results.map((item) => <div className="results-tr" key={item.id}><strong>{item.nickname}</strong><span>{item.studentId}</span><b>{item.score} / {item.total}</b><button onClick={() => resetSubmission(item.id)}>{t("allowRetry")}</button></div>)}</div>)}
           </section>
@@ -262,6 +265,7 @@ export default function TeacherDashboard() {
       {creating && (
         <div className="modal-backdrop"><section className="create-modal">
           <div className="modal-head"><div><span className="tiny-label">{editingId ? "EDIT QUIZ" : "NEW QUIZ"}</span><h2>{editingId ? t("editQuiz") : t("createQuiz")}</h2></div><button onClick={closeEditor}>×</button></div>
+          {editingId && <p className="timing-rule">{language === "zh" ? "可以随时修改。保存后，已开始的学生继续使用原题目和判分规则；之后开始的学生使用新版本。已提交成绩不会被更改。" : "You can edit at any time. Students who already started keep their original questions and grading; new students receive the updated version. Previous scores are unchanged."}</p>}
           <form onSubmit={saveQuiz}>
             {!editingId && <label className="custom-code-field">{t("customQuizCode")}<input value={quizCode} onChange={(event) => setQuizCode(event.target.value.replace(/\s/g, "").toUpperCase())} placeholder={t("customQuizCodePlaceholder")} minLength={3} maxLength={24} pattern="[A-Za-z0-9][A-Za-z0-9_-]{2,23}" autoComplete="off" spellCheck={false} /><small>{t("customQuizCodeHint")}</small></label>}
             <div className="form-grid"><label>{t("quizTitle")}<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("quizTitlePlaceholder")} maxLength={80} autoFocus /><small>{language === "zh" ? "支持 LaTeX" : "LaTeX supported"}</small></label><label>{t("shortDescription")}<input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("descriptionPlaceholder")} maxLength={240} /></label></div>
