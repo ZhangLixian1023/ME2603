@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizAttemptState, QuizProgress, QuizSession, QuizSubmissionResult, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
-import { quizTimingRules, shouldExtendQuiz } from "./quiz-timing";
+import { defaultQuizDurationMinutes, quizTimingRules, shouldExtendQuiz, timingRulesForAttempt } from "./quiz-timing";
 
 type PreviewQuestion = QuestionInput & { id: number };
 type PreviewQuiz = {
@@ -10,6 +10,7 @@ type PreviewQuiz = {
   code: string;
   title: string;
   description: string;
+  durationMinutes: number;
   isPublished: boolean;
   createdAt: string;
   questions: PreviewQuestion[];
@@ -86,6 +87,7 @@ function createStore(): PreviewStore {
         code: "DEMO26",
         title: "周五小测 · 预览示例",
         description: "内存预览模式：关闭服务器后，新增题目和答卷会自动清空。",
+        durationMinutes: defaultQuizDurationMinutes,
         isPublished: true,
         createdAt: new Date().toISOString(),
         questions,
@@ -151,6 +153,7 @@ export async function createQuiz(input: QuizInput) {
     code,
     title: input.title,
     description: input.description || "",
+    durationMinutes: input.durationMinutes ?? defaultQuizDurationMinutes,
     isPublished: Boolean(input.published),
     createdAt: new Date().toISOString(),
     questions,
@@ -170,6 +173,7 @@ export async function listQuizzes() {
       code: quiz.code,
       title: quiz.title,
       description: quiz.description,
+      durationMinutes: quiz.durationMinutes,
       isPublished: quiz.isPublished,
       createdAt: quiz.createdAt,
       questionCount: quiz.questions.length,
@@ -185,6 +189,7 @@ export async function getTeacherQuiz(id: number) {
     code: quiz.code,
     title: quiz.title,
     description: quiz.description,
+    durationMinutes: quiz.durationMinutes,
     isPublished: quiz.isPublished,
     questions: quiz.questions.map((question) => ({
       id: question.id,
@@ -202,6 +207,7 @@ export async function updateQuiz(id: number, input: QuizInput) {
   if (!quiz) throw new Error("QUIZ_NOT_FOUND");
   quiz.title = input.title;
   quiz.description = input.description || "";
+  quiz.durationMinutes = input.durationMinutes ?? defaultQuizDurationMinutes;
   quiz.questions = copyQuestions(input.questions);
   quiz.revisions.push(quiz.questions);
   quiz.revision += 1;
@@ -250,10 +256,11 @@ export async function getQuizImageKeys(id: number): Promise<string[]> {
   return [...new Set(quiz?.revisions.flat().map((question) => question.imageKey).filter((key): key is string => Boolean(key)) || [])];
 }
 
-export async function setQuizPublished(id: number, published: boolean) {
+export async function setQuizPublished(id: number, published: boolean, durationMinutes?: number) {
   const quiz = store().quizzes.find((candidate) => candidate.id === id);
   if (!quiz) return 0;
   quiz.isPublished = published;
+  if (durationMinutes !== undefined) quiz.durationMinutes = durationMinutes;
   return 1;
 }
 
@@ -378,7 +385,7 @@ export async function startQuizSession(code: string, studentId: string, nickname
       nickname,
       answers: new Array(quiz.questions.length).fill(-1),
       startedAt: startedAt.toISOString(),
-      expiresAt: new Date(startedAt.getTime() + quizTimingRules.durationSeconds * 1000).toISOString(),
+      expiresAt: new Date(startedAt.getTime() + quiz.durationMinutes * 60_000).toISOString(),
       submittedAt: null,
       timedOut: false,
       extensionCount: 0,
@@ -390,7 +397,8 @@ export async function startQuizSession(code: string, studentId: string, nickname
   const progress = previewProgress(quiz);
   const publicQuiz = await getPublicQuiz(quiz.code, attempt.revision);
   if (!publicQuiz) return null;
-  return { quiz: publicQuiz, attempt: previewAttemptState(quiz, attempt), progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
+  const attemptState = previewAttemptState(quiz, attempt);
+  return { quiz: publicQuiz, attempt: attemptState, progress, rules: timingRulesForAttempt(attemptState), serverNow: new Date().toISOString() };
 }
 
 export async function getQuizAttemptState(code: string, studentId: string) {
@@ -401,7 +409,8 @@ export async function getQuizAttemptState(code: string, studentId: string) {
   const attempt = findAttempt(quiz.id, studentId);
   if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
   const progress = previewProgress(quiz);
-  return { attempt: previewAttemptState(quiz, attempt), progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
+  const attemptState = previewAttemptState(quiz, attempt);
+  return { attempt: attemptState, progress, rules: timingRulesForAttempt(attemptState), serverNow: new Date().toISOString() };
 }
 
 export async function saveQuizAnswer(code: string, studentId: string, questionIndex: number, answer: number) {

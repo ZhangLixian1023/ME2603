@@ -9,6 +9,7 @@ export type QuizInput = {
   code?: string;
   title: string;
   description?: string;
+  durationMinutes?: number;
   questions: QuestionInput[];
   published?: boolean;
 };

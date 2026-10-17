@@ -3,6 +3,7 @@ import { isValidSession } from "@/lib/auth";
 import { createQuiz, listQuizzes, type QuestionInput } from "@/lib/db";
 import { deleteQuestionImages, isQuestionImageKey } from "@/lib/question-images";
 import { audit } from "@/lib/security";
+import { defaultQuizDurationMinutes, validQuizDurationMinutes } from "@/lib/quiz-timing";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,7 @@ export async function POST(request: NextRequest) {
     code?: string;
     title?: string;
     description?: string;
+    durationMinutes?: number;
     questions?: QuestionInput[];
     published?: boolean;
   } | null;
@@ -24,6 +26,10 @@ export async function POST(request: NextRequest) {
   const title = body?.title?.trim() || "";
   const code = body?.code?.trim().toUpperCase() || undefined;
   const questions = body?.questions || [];
+  const durationMinutes = body?.durationMinutes === undefined ? defaultQuizDurationMinutes : body.durationMinutes;
+  if (!validQuizDurationMinutes(durationMinutes)) {
+    return NextResponse.json({ error: "作答时长须为 1–180 分钟的整数" }, { status: 400 });
+  }
   if (code && !/^[A-Z0-9][A-Z0-9_-]{2,23}$/.test(code)) {
     return NextResponse.json({ error: "测验代码必须为 3–24 位字母、数字、- 或 _" }, { status: 400 });
   }
@@ -51,6 +57,7 @@ export async function POST(request: NextRequest) {
       code,
       title,
       description: body?.description?.trim().slice(0, 240),
+      durationMinutes,
       questions: normalizedQuestions,
       published: Boolean(body?.published),
     });

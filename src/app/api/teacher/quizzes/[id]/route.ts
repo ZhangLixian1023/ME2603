@@ -3,6 +3,7 @@ import { isValidSession } from "@/lib/auth";
 import { deleteQuiz, getQuizImageKeys, getTeacherQuiz, updateQuiz, type QuestionInput } from "@/lib/db";
 import { deleteQuestionImages, isQuestionImageKey } from "@/lib/question-images";
 import { audit } from "@/lib/security";
+import { validQuizDurationMinutes } from "@/lib/quiz-timing";
 
 export const runtime = "nodejs";
 
@@ -27,14 +28,19 @@ export async function GET(request: NextRequest, context: RouteContext<"/api/teac
 export async function PUT(request: NextRequest, context: RouteContext<"/api/teacher/quizzes/[id]">) {
   if (!isValidSession(request)) return NextResponse.json({ error: "请先登录" }, { status: 401 });
   const { id } = await context.params;
-  const body = await request.json().catch(() => null) as { title?: string; description?: string; questions?: QuestionInput[] } | null;
+  const body = await request.json().catch(() => null) as { title?: string; description?: string; durationMinutes?: number; questions?: QuestionInput[] } | null;
   if (!validInput(body)) return NextResponse.json({ error: "请完整填写标题、题目文字或图片、选项和正确答案" }, { status: 400 });
   const existingQuiz = await getTeacherQuiz(Number(id));
   if (!existingQuiz) return NextResponse.json({ error:"测验不存在" }, { status:404 });
+  const durationMinutes = body?.durationMinutes === undefined ? existingQuiz.durationMinutes : body.durationMinutes;
+  if (!validQuizDurationMinutes(durationMinutes)) {
+    return NextResponse.json({ error: "作答时长须为 1–180 分钟的整数" }, { status: 400 });
+  }
   const normalizedQuestions = body!.questions!.map((q) => ({ prompt:(q.prompt || "").trim(), options:q.options.map((o)=>o.trim()), correctIndex:q.correctIndex, imageKey:q.imageKey || null }));
   try {
     await updateQuiz(Number(id), {
       title: body!.title!.trim(), description: body!.description?.trim().slice(0, 240),
+      durationMinutes,
       questions: normalizedQuestions,
     });
     // Earlier revisions (including their image objects) remain available to students who started before this edit.

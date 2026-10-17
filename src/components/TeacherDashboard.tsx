@@ -10,7 +10,7 @@ import MathText from "./MathText";
 import { localizeApiError, useLanguage } from "./LanguageProvider";
 import TeacherTools from "./TeacherTools";
 
-type QuizSummary = { id: number; code: string; title: string; description: string; isPublished: boolean; questionCount: number; submissionCount: number };
+type QuizSummary = { id: number; code: string; title: string; description: string; durationMinutes: number; isPublished: boolean; questionCount: number; submissionCount: number };
 type DraftQuestion = { prompt: string; options: string[]; correctIndex: number; imageKey: string | null; imageFile: File | null; imagePreview: string | null };
 type Submission = { id: number; studentId: string; nickname: string; score: number; total: number; submittedAt: string };
 type Statistics = { submissionCount:number; averageScore:number; averageAccuracy:number; currentRevisionSubmissionCount:number; questions:Array<{questionId:number;prompt:string;correctCount:number;responseCount:number;accuracy:number}> };
@@ -28,6 +28,9 @@ export default function TeacherDashboard() {
   const [quizCode, setQuizCode] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [durationMinutes, setDurationMinutes] = useState("10");
+  const [publishingQuiz, setPublishingQuiz] = useState<QuizSummary | null>(null);
+  const [publishDurationMinutes, setPublishDurationMinutes] = useState("10");
   const [questions, setQuestions] = useState<DraftQuestion[]>([blankQuestion()]);
   const [activeResults, setActiveResults] = useState<number | null>(null);
   const [results, setResults] = useState<Submission[]>([]);
@@ -75,7 +78,7 @@ export default function TeacherDashboard() {
   function updateOption(questionIndex: number, optionIndex: number, value: string) { setQuestions((current) => current.map((question, index) => index === questionIndex ? { ...question, options: question.options.map((option, currentOption) => currentOption === optionIndex ? value : option) } : question)); }
   function releasePreview(question: DraftQuestion) { if (question.imagePreview?.startsWith("blob:")) URL.revokeObjectURL(question.imagePreview); }
   function closeEditor() { questions.forEach(releasePreview); setCreating(false); }
-  function openCreate() { questions.forEach(releasePreview); setEditingId(null); setQuizCode(""); setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setError(""); setCreating(true); }
+  function openCreate() { questions.forEach(releasePreview); setEditingId(null); setQuizCode(""); setTitle(""); setDescription(""); setDurationMinutes("10"); setQuestions([blankQuestion()]); setError(""); setCreating(true); }
 
   function selectQuestionImage(index: number, file: File | undefined) {
     if (!file) return;
@@ -106,7 +109,7 @@ export default function TeacherDashboard() {
     const response = await fetch(`/api/teacher/quizzes/${id}`, { cache: "no-store" });
     const data = await response.json(); setBusy(false);
     if (!response.ok) { setError(localizeApiError(data.error, language, "readQuizFailed")); return; }
-    setEditingId(id); setQuizCode(""); setTitle(data.quiz.title); setDescription(data.quiz.description);
+    setEditingId(id); setQuizCode(""); setTitle(data.quiz.title); setDescription(data.quiz.description); setDurationMinutes(String(data.quiz.durationMinutes));
     questions.forEach(releasePreview);
     setQuestions(data.quiz.questions.map((question: DraftQuestion) => ({
       prompt: question.prompt,
@@ -146,15 +149,15 @@ export default function TeacherDashboard() {
       const response = await fetch(editingId ? `/api/teacher/quizzes/${editingId}` : "/api/teacher/quizzes", {
         method: editingId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: editingId ? undefined : quizCode, title, description, questions: preparedQuestions, published }),
+        body: JSON.stringify({ code: editingId ? undefined : quizCode, title, description, durationMinutes: Number(durationMinutes), questions: preparedQuestions, published }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(localizeApiError(data.error, language, "saveFailed"));
       saved = true;
 
       questions.forEach(releasePreview);
-      setQuizCode(""); setTitle(""); setDescription(""); setQuestions([blankQuestion()]); setCreating(false); setEditingId(null);
-      if (wasEditing) setNotice(language === "zh" ? "测验已更新。已开始的学生继续使用原题目，之后开始的学生使用新题目；已有成绩不变。" : "Quiz updated. Existing attempts keep their original questions; new attempts use the new version. Previous scores stay unchanged.");
+      setQuizCode(""); setTitle(""); setDescription(""); setDurationMinutes("10"); setQuestions([blankQuestion()]); setCreating(false); setEditingId(null);
+      if (wasEditing) setNotice(language === "zh" ? "测验已更新。已开始的学生保留原题目、判分规则和截止时间；之后开始的学生使用新设置。已有成绩不变。" : "Quiz updated. Existing attempts keep their original questions, grading and deadline; new attempts use the updated settings. Previous scores stay unchanged.");
       else setNotice(t("quizCreated").replace("{code}", data.quiz.code).replace("{status}", published ? t("studentsCanEnter") : t("publishToOpen")));
       await loadQuizzes();
     } catch (reason) {
@@ -173,10 +176,30 @@ export default function TeacherDashboard() {
   }
 
   async function togglePublish(quiz: QuizSummary) {
+    if (!quiz.isPublished) {
+      setPublishingQuiz(quiz);
+      setPublishDurationMinutes(String(quiz.durationMinutes));
+      setError("");
+      return;
+    }
     setBusy(true); setError("");
-    const response = await fetch(`/api/teacher/quizzes/${quiz.id}/publish`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ published: !quiz.isPublished }) });
+    const response = await fetch(`/api/teacher/quizzes/${quiz.id}/publish`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ published: false }) });
     setBusy(false);
     if (!response.ok) { const data = await response.json(); setError(localizeApiError(data.error, language, "operationFailed")); return; }
+    await loadQuizzes();
+  }
+
+  async function confirmPublish(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!publishingQuiz) return;
+    setBusy(true); setError("");
+    const response = await fetch(`/api/teacher/quizzes/${publishingQuiz.id}/publish`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ published: true, durationMinutes: Number(publishDurationMinutes) }),
+    });
+    setBusy(false);
+    if (!response.ok) { const data = await response.json(); setError(localizeApiError(data.error, language, "operationFailed")); return; }
+    setPublishingQuiz(null);
     await loadQuizzes();
   }
 
@@ -238,7 +261,7 @@ export default function TeacherDashboard() {
           {quizzes.map((quiz) => (
             <article className="quiz-row" key={quiz.id}>
               <div className="quiz-icon">{quiz.title.slice(0, 1)}</div>
-              <div className="quiz-info"><h3><MathText>{quiz.title}</MathText></h3><p>{t("code")} <b>{quiz.code}</b> · {quiz.questionCount} {t("questionsShort")} · {quiz.submissionCount} {t("submittedShort")}</p></div>
+              <div className="quiz-info"><h3><MathText>{quiz.title}</MathText></h3><p>{t("code")} <b>{quiz.code}</b> · {quiz.questionCount} {t("questionsShort")} · {quiz.durationMinutes} {t("minutesUnit")} · {quiz.submissionCount} {t("submittedShort")}</p></div>
               <span className={quiz.isPublished ? "status published" : "status draft"}>{quiz.isPublished ? t("published") : t("draft")}</span>
               <div className="row-actions">
                 {quiz.isPublished && <><button onClick={() => copyLink(quiz.code)}>{t("copyLink")}</button><Link href={`/quiz/${quiz.code}/leaderboard`} target="_blank">{t("leaderboard")}</Link></>}
@@ -265,10 +288,11 @@ export default function TeacherDashboard() {
       {creating && (
         <div className="modal-backdrop"><section className="create-modal">
           <div className="modal-head"><div><span className="tiny-label">{editingId ? "EDIT QUIZ" : "NEW QUIZ"}</span><h2>{editingId ? t("editQuiz") : t("createQuiz")}</h2></div><button onClick={closeEditor}>×</button></div>
-          {editingId && <p className="timing-rule">{language === "zh" ? "可以随时修改。保存后，已开始的学生继续使用原题目和判分规则；之后开始的学生使用新版本。已提交成绩不会被更改。" : "You can edit at any time. Students who already started keep their original questions and grading; new students receive the updated version. Previous scores are unchanged."}</p>}
+          {editingId && <p className="timing-rule">{language === "zh" ? "可以随时修改。保存后，已开始的学生保留原题目、判分规则和截止时间；之后开始的学生使用新设置。已提交成绩不会被更改。" : "You can edit at any time. Students who already started keep their original questions, grading and deadline; new students use the updated settings. Previous scores are unchanged."}</p>}
           <form onSubmit={saveQuiz}>
             {!editingId && <label className="custom-code-field">{t("customQuizCode")}<input value={quizCode} onChange={(event) => setQuizCode(event.target.value.replace(/\s/g, "").toUpperCase())} placeholder={t("customQuizCodePlaceholder")} minLength={3} maxLength={24} pattern="[A-Za-z0-9][A-Za-z0-9_-]{2,23}" autoComplete="off" spellCheck={false} /><small>{t("customQuizCodeHint")}</small></label>}
             <div className="form-grid"><label>{t("quizTitle")}<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("quizTitlePlaceholder")} maxLength={80} autoFocus /><small>{language === "zh" ? "支持 LaTeX" : "LaTeX supported"}</small></label><label>{t("shortDescription")}<input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("descriptionPlaceholder")} maxLength={240} /></label></div>
+            <label className="quiz-duration-field">{t("quizDuration")}<input type="number" min="1" max="180" step="1" required value={durationMinutes} onChange={(event) => setDurationMinutes(event.target.value)} /><small>{t("quizDurationHint")}</small></label>
             {title && <div className="quiz-title-preview"><span>{language === "zh" ? "标题预览" : "Title preview"}</span><strong><MathText>{title}</MathText></strong></div>}
             <div className="question-editor-list">{questions.map((question, questionIndex) => (
               <article className="question-editor" key={questionIndex}>
@@ -303,6 +327,17 @@ export default function TeacherDashboard() {
               {!editingId && <button className="secondary-button" name="intent" value="draft" disabled={busy}>{busy ? t("saving") : t("saveDraft")}</button>}
               <button className="primary-button" name="intent" value={editingId ? "edit" : "publish"} disabled={busy}>{busy ? t("saving") : editingId ? t("saveChanges") : t("savePublish")}</button>
             </div></div>
+          </form>
+        </section></div>
+      )}
+      {publishingQuiz && (
+        <div className="modal-backdrop"><section className="create-modal publish-modal">
+          <div className="modal-head"><div><span className="tiny-label">{t("teacherVisible")}</span><h2>{t("publishQuiz")}</h2></div><button type="button" onClick={() => setPublishingQuiz(null)}>×</button></div>
+          <p><MathText>{publishingQuiz.title}</MathText></p>
+          <form onSubmit={confirmPublish}>
+            <label className="quiz-duration-field">{t("quizDuration")}<input type="number" min="1" max="180" step="1" required value={publishDurationMinutes} onChange={(event) => setPublishDurationMinutes(event.target.value)} autoFocus /><small>{t("quizDurationHint")}</small></label>
+            {error && <div className="error-box">{error}</div>}
+            <div className="save-actions"><button type="button" className="secondary-button" onClick={() => setPublishingQuiz(null)}>{t("cancel")}</button><button type="submit" className="primary-button" disabled={busy}>{busy ? t("saving") : t("publish")}</button></div>
           </form>
         </section></div>
       )}

@@ -4,7 +4,7 @@ import postgres, { type Sql } from "postgres";
 import { randomUUID } from "node:crypto";
 import { hashPassword, verifyPassword } from "./auth";
 import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizAttemptState, QuizProgress, QuizSession, QuizSubmissionResult, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
-import { quizTimingRules, shouldExtendQuiz } from "./quiz-timing";
+import { defaultQuizDurationMinutes, quizTimingRules, shouldExtendQuiz, timingRulesForAttempt } from "./quiz-timing";
 
 const retentionDays = Math.max(1, Number(process.env.DATA_RETENTION_DAYS) || 365);
 const codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -83,11 +83,13 @@ async function ensurePostgres() {
         code TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
+        duration_minutes INTEGER NOT NULL DEFAULT 10,
         is_published BOOLEAN NOT NULL DEFAULT FALSE,
         revision INTEGER NOT NULL DEFAULT 1,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )`;
     await sql`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1`;
+    await sql`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL DEFAULT 10`;
 
     await sql`
       CREATE TABLE IF NOT EXISTS questions (
@@ -221,8 +223,8 @@ async function ensurePostgres() {
 async function insertPostgresQuiz(sql: Sql, input: QuizInput, code = generateCode()) {
   return sql.begin(async (tx) => {
     const [quiz] = await tx`
-      INSERT INTO quizzes (code, title, description, is_published)
-      VALUES (${code}, ${input.title}, ${input.description || ""}, ${Boolean(input.published)})
+      INSERT INTO quizzes (code, title, description, duration_minutes, is_published)
+      VALUES (${code}, ${input.title}, ${input.description || ""}, ${input.durationMinutes ?? defaultQuizDurationMinutes}, ${Boolean(input.published)})
       RETURNING id, code`;
 
     for (let index = 0; index < input.questions.length; index += 1) {
@@ -274,6 +276,7 @@ export async function listQuizzes() {
       q.code,
       q.title,
       q.description,
+      q.duration_minutes AS "durationMinutes",
       q.is_published AS "isPublished",
       q.created_at AS "createdAt",
       COUNT(DISTINCT qu.id)::int AS "questionCount",
@@ -290,7 +293,7 @@ export async function listQuizzes() {
 export async function getTeacherQuiz(id: number) {
   await ensurePostgres();
   const [quiz] = await pg()`
-    SELECT id, code, title, description, is_published AS "isPublished"
+    SELECT id, code, title, description, duration_minutes AS "durationMinutes", is_published AS "isPublished"
     FROM quizzes
     WHERE id = ${id}`;
 
@@ -305,6 +308,7 @@ export async function getTeacherQuiz(id: number) {
   return {
     ...quiz,
     id: Number(quiz.id),
+    durationMinutes: Number(quiz.durationMinutes),
     questions: questions.map((question) => ({
       ...question,
       id: Number(question.id),
@@ -321,7 +325,8 @@ export async function updateQuiz(id: number, input: QuizInput) {
     // Serialize an edit with new starts so each student receives one immutable question revision.
     const [changed] = await tx`
       UPDATE quizzes
-      SET title = ${input.title}, description = ${input.description || ""}, revision = revision + 1
+      SET title = ${input.title}, description = ${input.description || ""},
+          duration_minutes = ${input.durationMinutes ?? defaultQuizDurationMinutes}, revision = revision + 1
       WHERE id = ${id}
       RETURNING id, revision`;
     if (!changed) throw new Error("QUIZ_NOT_FOUND");
@@ -391,11 +396,11 @@ export async function getQuizImageKeys(id: number): Promise<string[]> {
   return rows.map((row) => String(row.imageKey || row.image_key));
 }
 
-export async function setQuizPublished(id: number, published: boolean) {
+export async function setQuizPublished(id: number, published: boolean, durationMinutes?: number) {
   await ensurePostgres();
   const rows = await pg()`
     UPDATE quizzes
-    SET is_published = ${published}
+    SET is_published = ${published}, duration_minutes = COALESCE(${durationMinutes ?? null}, duration_minutes)
     WHERE id = ${id}
     RETURNING id`;
   return rows.length;
@@ -539,7 +544,7 @@ export async function startQuizSession(code: string, studentId: string, nickname
   const normalizedCode = code.trim().toUpperCase();
   const started = await pg().begin(async (tx) => {
     const [quiz] = await tx`
-      SELECT id, revision FROM quizzes
+      SELECT id, revision, duration_minutes AS "durationMinutes" FROM quizzes
       WHERE code = ${normalizedCode} AND is_published = TRUE
       FOR UPDATE`;
     if (!quiz) return null;
@@ -550,7 +555,7 @@ export async function startQuizSession(code: string, studentId: string, nickname
       INSERT INTO quiz_attempts (quiz_id, student_id, nickname, answers_json, expires_at, revision)
       VALUES (
         ${quiz.id}, ${studentId}, ${nickname}, ${tx.json(new Array(Number(count.count)).fill(-1))},
-        NOW() + (${quizTimingRules.durationSeconds} * INTERVAL '1 second'), ${quiz.revision}
+        NOW() + (${Number(quiz.durationMinutes) * 60} * INTERVAL '1 second'), ${quiz.revision}
       )
       ON CONFLICT DO NOTHING`;
     const [attempt] = await tx`
@@ -569,7 +574,7 @@ export async function startQuizSession(code: string, studentId: string, nickname
     readQuizAttemptState(started.quizId, studentId, started.questionCount),
   ]);
   if (!publicQuiz || !attempt) return null;
-  return { quiz: publicQuiz, attempt, progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
+  return { quiz: publicQuiz, attempt, progress, rules: timingRulesForAttempt(attempt), serverNow: new Date().toISOString() };
 }
 
 export async function getQuizAttemptState(code: string, studentId: string) {
@@ -586,7 +591,7 @@ export async function getQuizAttemptState(code: string, studentId: string) {
     GROUP BY a.id`;
   const attempt = count ? await readQuizAttemptState(Number(quiz.id), studentId, Number(count.count)) : null;
   if (!attempt) throw new Error("ATTEMPT_NOT_STARTED");
-  return { attempt, progress, rules: quizTimingRules, serverNow: new Date().toISOString() };
+  return { attempt, progress, rules: timingRulesForAttempt(attempt), serverNow: new Date().toISOString() };
 }
 
 export async function saveQuizAnswer(code: string, studentId: string, questionIndex: number, answer: number) {

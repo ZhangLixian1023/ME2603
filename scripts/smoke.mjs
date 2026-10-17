@@ -16,6 +16,7 @@ async function json(path, init = {}) {
 }
 
 let quizId = null;
+let draftQuizId = null;
 let resourceId = null;
 let questionImageKey = null;
 let cookie = "";
@@ -66,12 +67,34 @@ try {
   const customCodeInput = `smoke${Date.now().toString(36)}`;
   const created = await json("/api/teacher/quizzes", {
     method: "POST", headers: { "content-type": "application/json", cookie },
-    body: JSON.stringify({ code: customCodeInput, title: "自动化验收测验 $E=mc^2$", description: "临时数据", published: true, questions: [{ prompt: "", options: ["1", "2", "3", "4"], correctIndex: 1, imageKey: questionImageKey }] }),
+    body: JSON.stringify({ code: customCodeInput, title: "自动化验收测验 $E=mc^2$", description: "临时数据", durationMinutes: 8, published: true, questions: [{ prompt: "", options: ["1", "2", "3", "4"], correctIndex: 1, imageKey: questionImageKey }] }),
   });
   assert(created.response.status === 201, "创建并发布失败");
   quizId = created.data.quiz.id;
   const code = created.data.quiz.code;
   assert(code === customCodeInput.toUpperCase(), "自定义测验代码未正确保存");
+
+  const invalidDuration = await json("/api/teacher/quizzes", {
+    method: "POST", headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ title: "无效时长测验", durationMinutes: 0, questions: [{ prompt: "1 + 1 = ?", options: ["1", "2"], correctIndex: 1 }] }),
+  });
+  assert(invalidDuration.response.status === 400, "无效作答时长未被拒绝");
+
+  const draft = await json("/api/teacher/quizzes", {
+    method: "POST", headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ title: "发布时设置时长", published: false, questions: [{ prompt: "1 + 1 = ?", options: ["1", "2"], correctIndex: 1 }] }),
+  });
+  assert(draft.response.status === 201, "创建默认时长草稿失败");
+  draftQuizId = draft.data.quiz.id;
+  const draftBeforePublish = await json(`/api/teacher/quizzes/${draftQuizId}`, { headers: { cookie } });
+  assert(draftBeforePublish.data.quiz.durationMinutes === 10, "草稿默认时长不是十分钟");
+  const publishDraft = await json(`/api/teacher/quizzes/${draftQuizId}/publish`, {
+    method: "PATCH", headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ published: true, durationMinutes: 7 }),
+  });
+  assert(publishDraft.response.ok, "发布草稿时设置时长失败");
+  const draftAfterPublish = await json(`/api/teacher/quizzes/${draftQuizId}`, { headers: { cookie } });
+  assert(draftAfterPublish.data.quiz.isPublished && draftAfterPublish.data.quiz.durationMinutes === 7, "发布时设置的七分钟时长未保存");
 
   const duplicateCode = await json("/api/teacher/quizzes", {
     method: "POST", headers: { "content-type": "application/json", cookie },
@@ -88,21 +111,29 @@ try {
   const publicQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: studentCookie } });
   assert(publicQuiz.response.ok && !JSON.stringify(publicQuiz.data).includes("correctIndex"), "学生接口泄露答案或读取失败");
   assert(publicQuiz.data.attempt?.status === "active" && publicQuiz.data.attempt.answers?.[0] === -1, "进入测验后未自动建立答题计时记录");
-  assert(publicQuiz.data.rules?.durationSeconds === 600 && publicQuiz.data.rules?.progressRefreshSeconds === 30, "十分钟计时或 30 秒刷新规则不正确");
+  assert(publicQuiz.data.rules?.durationSeconds === 480 && publicQuiz.data.rules?.progressRefreshSeconds === 30, "自定义八分钟计时或 30 秒刷新规则不正确");
   const initialStartedAt = publicQuiz.data.attempt.startedAt;
   const initialDuration = Date.parse(publicQuiz.data.attempt.expiresAt) - Date.parse(initialStartedAt);
-  assert(initialDuration === 10 * 60 * 1000, "首次进入没有获得准确的十分钟答题时间");
+  assert(initialDuration === 8 * 60 * 1000, "首次进入没有获得准确的八分钟答题时间");
   assert(publicQuiz.data.quiz.title.includes("$a^2$"), "LaTeX 测验标题未被原样保存");
   assert(publicQuiz.data.quiz.questions[0].prompt.includes("$$2+2=4$$") && publicQuiz.data.quiz.questions[0].options[2] === "$4$", "LaTeX 题目或选项未被原样保存");
   assert(publicQuiz.data.quiz.questions[0].imageUrl && !JSON.stringify(publicQuiz.data).includes(questionImageKey), "题目图片地址缺失或泄露了对象存储键");
   const questionImage = await fetch(`${base}${publicQuiz.data.quiz.questions[0].imageUrl}`, { headers: { cookie: studentCookie } });
   assert(questionImage.ok && questionImage.headers.get("content-type") === "image/png" && (await questionImage.arrayBuffer()).byteLength > 0, "学生无法读取题目图片");
 
+  const durationEdited = await json(`/api/teacher/quizzes/${quizId}`, {
+    method: "PUT", headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ title: "自动化验收测验 $a^2$（已编辑）", description: "临时数据", durationMinutes: 6, questions: [{ prompt: "计算 $2^2$，或验证：$$2+2=4$$", options: ["$2$", "$3$", "$4$", "$5$"], correctIndex: 2, imageKey: questionImageKey }] }),
+  });
+  assert(durationEdited.response.ok, "修改测验时长失败");
+
   const guestPublicQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: guestCookie } });
   assert(guestPublicQuiz.response.ok && !JSON.stringify(guestPublicQuiz.data).includes("correctIndex"), "旁听生无法读取测验或接口泄露答案");
+  assert(guestPublicQuiz.data.rules?.durationSeconds === 360 && Date.parse(guestPublicQuiz.data.attempt.expiresAt) - Date.parse(guestPublicQuiz.data.attempt.startedAt) === 6 * 60 * 1000, "新进入学生未使用修改后的六分钟时长");
 
   const resumedQuiz = await json(`/api/quizzes/${code}`, { headers: { cookie: studentCookie } });
   assert(resumedQuiz.data.attempt?.startedAt === initialStartedAt, "刷新页面错误地重置了答题倒计时");
+  assert(resumedQuiz.data.attempt?.expiresAt === publicQuiz.data.attempt.expiresAt && resumedQuiz.data.rules?.durationSeconds === 480, "修改时长影响了已开始学生的截止时间");
 
   const savedAnswer = await json(`/api/quizzes/${code}/attempt`, {
     method: "PATCH", headers: { "content-type": "application/json", cookie: studentCookie },
@@ -168,13 +199,16 @@ try {
 
   const csv = await fetch(`${base}/api/teacher/quizzes/${quizId}/export`, { headers: { cookie } });
   assert(csv.ok && (await csv.text()).includes("20260001"), "CSV 导出失败");
-  console.log("✓ 登录、十分钟计时、答案自动保存、实时人数、测验、排行榜、成绩册、资料与 CSV 均通过");
+  console.log("✓ 登录、自定义计时与原截止时间保留、答案自动保存、实时人数、测验、排行榜、成绩册、资料与 CSV 均通过");
 } finally {
   if (resourceId && cookie) {
     await fetch(`${base}/api/teacher/resources/${resourceId}`, { method: "DELETE", headers: { cookie } });
   }
   if (quizId && cookie) {
     await fetch(`${base}/api/teacher/quizzes/${quizId}`, { method: "DELETE", headers: { cookie } });
+  }
+  if (draftQuizId && cookie) {
+    await fetch(`${base}/api/teacher/quizzes/${draftQuizId}`, { method: "DELETE", headers: { cookie } });
   }
   if (questionImageKey && cookie) {
     await fetch(`${base}/api/teacher/question-images`, { method: "DELETE", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ imageKey: questionImageKey }) });
