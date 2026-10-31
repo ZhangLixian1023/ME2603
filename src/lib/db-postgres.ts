@@ -4,6 +4,7 @@ import postgres, { type Sql } from "postgres";
 import { randomUUID } from "node:crypto";
 import { hashPassword, verifyPassword } from "./auth";
 import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizQuestionHistory, QuizAttemptState, QuizProgress, QuizSession, QuizSubmissionResult, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
+import { summarizeQuestionHistory } from "./question-statistics";
 import { defaultQuizDurationMinutes, quizTimingRules, shouldExtendQuiz, timingRulesForAttempt } from "./quiz-timing";
 
 const retentionDays = Math.max(1, Number(process.env.DATA_RETENTION_DAYS) || 365);
@@ -745,16 +746,15 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
       s.score,
       s.total,
       s.submitted_at AS "submittedAt",
-      s.correctness_json AS "correctnessJson",
       a.revision
     FROM submissions s
     LEFT JOIN quiz_attempts a ON a.quiz_id = s.quiz_id AND lower(a.student_id) = lower(s.student_id)
     WHERE s.quiz_id = ${id}
     ORDER BY s.score DESC, s.submitted_at ASC`;
 
-  const questions = await pg()`SELECT id, prompt FROM questions WHERE quiz_id = ${id} AND revision = ${quiz.revision} ORDER BY position`;
+  const history = await getQuizQuestionHistory(id);
+  if (!history) return null;
   const currentRevisionSubmissions = submissions.filter((submission) => Number(submission.revision) === Number(quiz.revision));
-  const correctnessRows = currentRevisionSubmissions.map((submission) => normalizeBooleanArray(submission.correctnessJson));
   const submissionCount = submissions.length;
   const totalScore = submissions.reduce((sum, submission) => sum + Number(submission.score), 0);
   const totalAnsweredQuestions = submissions.reduce((sum, submission) => sum + Number(submission.total), 0);
@@ -769,10 +769,7 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
       averageScore: submissionCount ? totalScore / submissionCount : 0,
       averageAccuracy: totalAnsweredQuestions ? totalScore / totalAnsweredQuestions : 0,
       currentRevisionSubmissionCount: currentRevisionSubmissions.length,
-      questions: questions.map((question, index) => {
-        const correctCount = correctnessRows.filter((row) => row[index]).length;
-        return { questionId: Number(question.id), prompt: String(question.prompt), correctCount, responseCount: correctnessRows.length, accuracy: correctnessRows.length ? correctCount / correctnessRows.length : 0 };
-      }),
+      questions: summarizeQuestionHistory(history),
     },
     submissions: submissions.map((submission) => ({
       id: Number(submission.id),

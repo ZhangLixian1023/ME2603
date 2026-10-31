@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizQuestionHistory, QuizAttemptState, QuizProgress, QuizSession, QuizSubmissionResult, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
+import { summarizeQuestionHistory } from "./question-statistics";
 import { defaultQuizDurationMinutes, quizTimingRules, shouldExtendQuiz, timingRulesForAttempt } from "./quiz-timing";
 
 type PreviewQuestion = QuestionInput & { id: number };
@@ -552,6 +553,8 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
   );
   const totalCorrect = submissions.reduce((sum, item) => sum + item.score, 0);
   const totalQuestions = submissions.reduce((sum, item) => sum + item.total, 0);
+  const history = await getQuizQuestionHistory(id);
+  if (!history) return null;
 
   return {
     quiz: { id: quiz.id, code: quiz.code, title: quiz.title },
@@ -560,10 +563,7 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
       averageScore: submissions.length ? submissions.reduce((sum, item) => sum + item.score, 0) / submissions.length : 0,
       averageAccuracy: totalQuestions ? totalCorrect / totalQuestions : 0,
       currentRevisionSubmissionCount: currentRevisionSubmissions.length,
-      questions: quiz.questions.map((question, index) => {
-        const correctCount = currentRevisionSubmissions.filter((submission) => submission.correctness[index]).length;
-        return { questionId: question.id, prompt: question.prompt, correctCount, responseCount: currentRevisionSubmissions.length, accuracy: currentRevisionSubmissions.length ? correctCount / currentRevisionSubmissions.length : 0 };
-      }),
+      questions: summarizeQuestionHistory(history),
     },
     submissions,
   };
