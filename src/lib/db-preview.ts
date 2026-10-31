@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizAttemptState, QuizProgress, QuizSession, QuizSubmissionResult, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
+import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizQuestionHistory, QuizAttemptState, QuizProgress, QuizSession, QuizSubmissionResult, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
 import { defaultQuizDurationMinutes, quizTimingRules, shouldExtendQuiz, timingRulesForAttempt } from "./quiz-timing";
 
 type PreviewQuestion = QuestionInput & { id: number };
@@ -566,6 +566,42 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
       }),
     },
     submissions,
+  };
+}
+
+export async function getQuizQuestionHistory(id: number): Promise<QuizQuestionHistory | null> {
+  const state = store();
+  const quiz = state.quizzes.find((candidate) => candidate.id === id);
+  if (!quiz) return null;
+
+  return {
+    quiz: { id: quiz.id, code: quiz.code, title: quiz.title, currentRevision: quiz.revision },
+    revisions: quiz.revisions.map((questions, index) => {
+      const revision = index + 1;
+      const submissions = state.submissions.filter((submission) =>
+        submission.quizId === id && state.attempts.some((attempt) =>
+          attempt.quizId === id && attempt.studentId.toLowerCase() === submission.studentId.toLowerCase() && attempt.revision === revision,
+        ),
+      );
+      return {
+        revision,
+        responseCount: submissions.length,
+        questions: questions.map((question, position) => {
+          const correctCount = submissions.filter((submission) => submission.correctness[position] === true).length;
+          return {
+            questionId: question.id,
+            position: position + 1,
+            prompt: question.prompt,
+            options: [...question.options],
+            correctIndex: question.correctIndex,
+            imageKey: question.imageKey || null,
+            correctCount,
+            responseCount: submissions.length,
+            accuracy: submissions.length ? correctCount / submissions.length : null,
+          };
+        }),
+      };
+    }),
   };
 }
 

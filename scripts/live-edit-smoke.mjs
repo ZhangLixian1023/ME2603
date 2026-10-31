@@ -91,7 +91,14 @@ try {
   const results = await json(`/api/teacher/quizzes/${quizId}/results`, { headers: { cookie: teacherCookie } });
   assert(results.response.ok && results.data.statistics.submissionCount === 3 && results.data.statistics.currentRevisionSubmissionCount === 1, "Versioned counts are incorrect");
   assert(results.data.statistics.averageAccuracy === 0.75 && results.data.statistics.questions.every((question) => question.responseCount === 1) && results.data.statistics.questions[1].accuracy === 0, "Versioned averages are incorrect");
-  console.log("✓ Live edit, old/new versions, image access, grading and statistics passed");
+  const privateHistory = await json(`/api/teacher/quizzes/${quizId}/question-history`);
+  assert(privateHistory.response.status === 401, "Question history is available without teacher login");
+  const history = await json(`/api/teacher/quizzes/${quizId}/question-history`, { headers: { cookie: teacherCookie } });
+  const [original, revised] = history.data.revisions || [];
+  assert(history.response.ok && original?.responseCount === 2 && revised?.responseCount === 1, "Historical response counts are incorrect");
+  assert(original.questions[0].prompt === "Original question" && original.questions[0].correctCount === 2 && original.questions[0].accuracy === 1 && original.questions[0].imageKey === imageKey, "Original question history is incorrect");
+  assert(revised.questions.length === 2 && revised.questions[0].correctCount === 1 && revised.questions[1].correctCount === 0 && revised.questions[1].accuracy === 0, "Revised question history is incorrect");
+  console.log("✓ Live edit, old/new versions, image access, grading and historical statistics passed");
 } finally {
   if (quizId) await fetch(`${base}/api/teacher/quizzes/${quizId}`, { method: "DELETE", headers: { cookie: teacherCookie } });
   else if (imageKey) await fetch(`${base}/api/teacher/question-images`, { method: "DELETE", headers: { "Content-Type": "application/json", cookie: teacherCookie }, body: JSON.stringify({ imageKey }) });

@@ -3,7 +3,7 @@ import "server-only";
 import * as postgresDatabase from "./db-postgres";
 import * as previewDatabase from "./db-preview";
 
-export type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizSession, QuizAttemptState, QuizProgress, QuizSubmissionResult, RosterStudent, RosterPreview, Gradebook, QaItem, ResourceItem } from "./db-types";
+export type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizQuestionHistory, QuizSession, QuizAttemptState, QuizProgress, QuizSubmissionResult, RosterStudent, RosterPreview, Gradebook, QaItem, ResourceItem } from "./db-types";
 
 const isPreviewMode = process.env.PREVIEW_MODE === "true";
 const database = isPreviewMode ? previewDatabase : postgresDatabase;
@@ -25,6 +25,7 @@ export const setQuizPublished = database.setQuizPublished;
 export const submitQuiz = database.submitQuiz;
 export const getLeaderboard = database.getLeaderboard;
 export const getQuizResults = database.getQuizResults;
+export const getQuizQuestionHistory = database.getQuizQuestionHistory;
 export const deleteSubmission = database.deleteSubmission;
 export const authenticateStudent = database.authenticateStudent;
 export const getStudent = database.getStudent;

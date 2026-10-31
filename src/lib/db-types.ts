@@ -83,6 +83,25 @@ export type QuizResults = {
   }>;
 };
 
+export type QuizQuestionHistory = {
+  quiz: { id: number; code: string; title: string; currentRevision: number };
+  revisions: Array<{
+    revision: number;
+    responseCount: number;
+    questions: Array<{
+      questionId: number;
+      position: number;
+      prompt: string;
+      options: string[];
+      correctIndex: number;
+      imageKey: string | null;
+      correctCount: number;
+      responseCount: number;
+      accuracy: number | null;
+    }>;
+  }>;
+};
+
 export type RosterStudent = { studentId: string; name: string };
 export type RosterPreview = {
   token: string;

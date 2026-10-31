@@ -3,7 +3,7 @@ import "server-only";
 import postgres, { type Sql } from "postgres";
 import { randomUUID } from "node:crypto";
 import { hashPassword, verifyPassword } from "./auth";
-import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizAttemptState, QuizProgress, QuizSession, QuizSubmissionResult, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
+import type { PublicQuiz, QuestionInput, QuizInput, QuizResults, QuizQuestionHistory, QuizAttemptState, QuizProgress, QuizSession, QuizSubmissionResult, RosterStudent, Gradebook, QaItem, ResourceItem } from "./db-types";
 import { defaultQuizDurationMinutes, quizTimingRules, shouldExtendQuiz, timingRulesForAttempt } from "./quiz-timing";
 
 const retentionDays = Math.max(1, Number(process.env.DATA_RETENTION_DAYS) || 365);
@@ -782,6 +782,58 @@ export async function getQuizResults(id: number): Promise<QuizResults | null> {
       total: Number(submission.total),
       submittedAt: String(submission.submittedAt),
     })),
+  };
+}
+
+export async function getQuizQuestionHistory(id: number): Promise<QuizQuestionHistory | null> {
+  await ensurePostgres();
+  const [quiz] = await pg()`SELECT id, code, title, revision FROM quizzes WHERE id = ${id}`;
+  if (!quiz) return null;
+
+  const [questions, answers] = await Promise.all([
+    pg()`
+      SELECT id, revision, position, prompt, options_json AS "optionsJson",
+             correct_index AS "correctIndex", image_key AS "imageKey"
+      FROM questions WHERE quiz_id = ${id} ORDER BY revision, position`,
+    pg()`
+      SELECT a.revision, s.correctness_json AS "correctnessJson"
+      FROM submissions s
+      JOIN quiz_attempts a ON a.quiz_id = s.quiz_id AND lower(a.student_id) = lower(s.student_id)
+      WHERE s.quiz_id = ${id}`,
+  ]);
+
+  const answersByRevision = new Map<number, boolean[][]>();
+  for (const answer of answers) {
+    const revision = Number(answer.revision);
+    const rows = answersByRevision.get(revision) || [];
+    rows.push(normalizeBooleanArray(answer.correctnessJson));
+    answersByRevision.set(revision, rows);
+  }
+
+  const revisionNumbers = [...new Set(questions.map((question) => Number(question.revision)))];
+  return {
+    quiz: { id: Number(quiz.id), code: String(quiz.code), title: String(quiz.title), currentRevision: Number(quiz.revision) },
+    revisions: revisionNumbers.map((revision) => {
+      const rows = answersByRevision.get(revision) || [];
+      return {
+        revision,
+        responseCount: rows.length,
+        questions: questions.filter((question) => Number(question.revision) === revision).map((question) => {
+          const correctCount = rows.filter((row) => row[Number(question.position)] === true).length;
+          return {
+            questionId: Number(question.id),
+            position: Number(question.position) + 1,
+            prompt: String(question.prompt),
+            options: normalizeOptions(question.optionsJson),
+            correctIndex: Number(question.correctIndex),
+            imageKey: question.imageKey ? String(question.imageKey) : null,
+            correctCount,
+            responseCount: rows.length,
+            accuracy: rows.length ? correctCount / rows.length : null,
+          };
+        }),
+      };
+    }),
   };
 }
 
